@@ -21,6 +21,8 @@ import {
   TrendingUp,
   Printer,
   Download,
+  QrCode,
+  RotateCcw,
 } from 'lucide-react';
 
 import { Card, CardContent } from '@/components/ui/card';
@@ -71,6 +73,8 @@ import { printInvoice, buildCSV, downloadCSV } from '@/lib/print';
 
 import { useAppStore } from '@/store/app-store'
 import { formatCurrency, getCurrencySymbol } from '@/lib/currency'
+import { UpiPaymentModal } from '@/components/phase4/upi-payment-modal'
+import { SaleReturnDialog } from '@/components/phase4/sale-return-dialog'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -93,6 +97,8 @@ interface SaleWithPart {
   quantity: number;
   unitPrice: number;
   totalPrice: number;
+  amountPaid?: number;
+  paymentStatus?: string;
   customerName: string;
   customerPhone: string;
   notes: string;
@@ -533,7 +539,35 @@ function WhatsAppShareButton({
           <p>Share via WhatsApp</p>
         </TooltipContent>
       </Tooltip>
-      <DropdownMenuContent align="end" className="w-48">
+      <DropdownMenuContent align="end" className="w-56">
+        {/* Share to Customer via WhatsApp */}
+        {sale.customerPhone && (
+          <>
+            <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+              Share to customer...
+            </div>
+            <DropdownMenuItem
+              onClick={() => {
+                const message = formatSaleMessage({
+                  partName: sale.part.name,
+                  partNumber: sale.part.partNumber,
+                  quantity: sale.quantity,
+                  unitPrice: sale.unitPrice,
+                  totalPrice: sale.totalPrice,
+                  customerName: sale.customerName || 'Walk-in',
+                  date: formatDate(sale.date),
+                  currency,
+                });
+                openWhatsApp(sale.customerPhone, message);
+              }}
+              className="cursor-pointer"
+            >
+              <User className="h-3.5 w-3.5 mr-2 text-blue-500" />
+              <span className="truncate">{sale.customerName || sale.customerPhone}</span>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
         <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
           Send to department...
         </div>
@@ -614,6 +648,89 @@ function PrintInvoiceButton({
         <p>Print / Save as PDF</p>
       </TooltipContent>
     </Tooltip>
+  );
+}
+
+// ─── UPI Payment Button ─────────────────────────────────────────────────────
+
+function UpiPaymentButton({
+  sale,
+  currency,
+}: {
+  sale: SaleWithPart;
+  currency: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const amountDue = sale.totalPrice - (sale.amountPaid || sale.totalPrice);
+
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 h-8 text-xs"
+            onClick={() => setOpen(true)}
+          >
+            <QrCode className="h-3.5 w-3.5 text-indigo-600" />
+            {amountDue > 0 && (
+              <Badge className="bg-orange-100 text-orange-700 text-[10px] px-1 py-0">
+                {formatCurrency(amountDue, currency, sale.currency || 'INR')}
+              </Badge>
+            )}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          <p>Accept UPI Payment</p>
+        </TooltipContent>
+      </Tooltip>
+      <UpiPaymentModal
+        open={open}
+        onClose={() => setOpen(false)}
+        saleId={sale.id}
+        amount={amountDue > 0 ? amountDue : sale.totalPrice}
+        payeeVpa={process.env.NEXT_PUBLIC_SHOP_UPI_VPA || ''}
+        payeeName={process.env.NEXT_PUBLIC_SHOP_NAME || 'Shop'}
+      />
+    </>
+  );
+}
+
+// ─── Sale Return Button ─────────────────────────────────────────────────────
+
+function SaleReturnButton({
+  sale,
+  currency,
+}: {
+  sale: SaleWithPart;
+  currency: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 h-8 text-xs"
+            onClick={() => setOpen(true)}
+          >
+            <RotateCcw className="h-3.5 w-3.5 text-orange-600" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          <p>Process Return / Refund</p>
+        </TooltipContent>
+      </Tooltip>
+      <SaleReturnDialog
+        open={open}
+        onClose={() => setOpen(false)}
+        sale={sale}
+      />
+    </>
   );
 }
 
@@ -1330,6 +1447,14 @@ export default function SalesPage() {
                                   <WhatsAppShareButton
                                     sale={sale}
                                     departments={departments}
+                                    currency={currency}
+                                  />
+                                  <UpiPaymentButton
+                                    sale={sale}
+                                    currency={currency}
+                                  />
+                                  <SaleReturnButton
+                                    sale={sale}
                                     currency={currency}
                                   />
                                   <PrintInvoiceButton

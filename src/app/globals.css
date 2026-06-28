@@ -203,6 +203,21 @@
   .dark *::-webkit-scrollbar-thumb:hover {
     background-color: oklch(0.5 0.02 256 / 0.8);
   }
+
+  /* Ensure sidebar ScrollArea shows scrollbar when content overflows */
+  [data-radix-scroll-area-viewport] {
+    scrollbar-width: thin !important;
+  }
+  [data-radix-scroll-area-viewport]::-webkit-scrollbar {
+    width: 6px !important;
+  }
+  [data-radix-scroll-area-viewport]::-webkit-scrollbar-thumb {
+    background-color: oklch(0.8 0.01 256 / 0.5) !important;
+    border-radius: 3px !important;
+  }
+  [data-radix-scroll-area-viewport]::-webkit-scrollbar-track {
+    background: transparent !important;
+  }
 }
 
 /* Selection — soft indigo */

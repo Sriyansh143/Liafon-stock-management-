@@ -429,6 +429,7 @@ export default function ReportsPage() {
   // Tab state
   const [activeTab, setActiveTab] = useState('daily');
   const [dailyDays, setDailyDays] = useState(30);
+  const [categoryDays, setCategoryDays] = useState(30);
 
   // Data state
   const [dailyReport, setDailyReport] = useState<DailyReport | null>(null);
@@ -481,7 +482,7 @@ export default function ReportsPage() {
   const fetchCategoryReport = useCallback(async () => {
     try {
       setLoadingCategory(true);
-      const res = await fetch('/api/reports?type=category');
+      const res = await fetch(`/api/reports?type=category&days=${categoryDays}`);
       if (!res.ok) throw new Error('Failed to fetch category report');
       const data = await res.json();
       setCategoryReport(data);
@@ -494,7 +495,7 @@ export default function ReportsPage() {
     } finally {
       setLoadingCategory(false);
     }
-  }, [toast]);
+  }, [toast, categoryDays]);
 
   const fetchStockReport = useCallback(async () => {
     try {
@@ -537,6 +538,14 @@ export default function ReportsPage() {
       fetchStockReport();
     }
   }, [activeTab, categoryReport, stockData, loadingCategory, loadingStock, fetchCategoryReport, fetchStockReport]);
+
+  // Refetch category report when duration changes
+  useEffect(() => {
+    if (activeTab === 'category') {
+      setCategoryReport(null);
+      fetchCategoryReport();
+    }
+  }, [categoryDays, activeTab, fetchCategoryReport]);
 
   // ── WhatsApp Handlers ──────────────────────────────────────────────────────
 
@@ -871,11 +880,27 @@ _Liafon Stock Management_`;
                     <CardTitle className="text-base font-semibold p-0">
                       Sales by Category
                     </CardTitle>
-                    <WhatsAppShareDropdown
-                      departments={departments}
-                      onShare={handleShareCategoryReport}
-                      label="Share Report"
-                    />
+                    <div className="flex items-center gap-2">
+                      <Select value={String(categoryDays)} onValueChange={(v) => setCategoryDays(parseInt(v, 10))}>
+                        <SelectTrigger className="h-8 w-[110px] text-xs" aria-label="Category date range">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="7" className="text-xs">Last 7 days</SelectItem>
+                          <SelectItem value="14" className="text-xs">Last 14 days</SelectItem>
+                          <SelectItem value="30" className="text-xs">Last 30 days</SelectItem>
+                          <SelectItem value="60" className="text-xs">Last 60 days</SelectItem>
+                          <SelectItem value="90" className="text-xs">Last 90 days</SelectItem>
+                          <SelectItem value="180" className="text-xs">Last 6 months</SelectItem>
+                          <SelectItem value="365" className="text-xs">Last 1 year</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <WhatsAppShareDropdown
+                        departments={departments}
+                        onShare={handleShareCategoryReport}
+                        label="Share Report"
+                      />
+                    </div>
                   </div>
                   <div className="h-[300px] w-full">
                     {categoryChartData.length > 0 ? (
