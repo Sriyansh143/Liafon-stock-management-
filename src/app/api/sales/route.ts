@@ -92,17 +92,7 @@ export async function POST(request: NextRequest) {
     if (!result.success) {
       return NextResponse.json({ error: result.error }, { status: 400 })
     }
-    const {
-      partId, quantity, unitPrice: unitPriceOverride,
-      customerName, customerPhone, notes,
-      taxRate: taxRateOverride, isInterState: isInterStateOverride,
-      hsnCode: hsnCodeOverride,
-      discount, discountType,
-      amountPaid: amountPaidOverride,
-      paymentMethod, paymentReference,
-      allowBelowCost,
-      customerId,
-    } = result.data
+    const { partId, quantity, unitPrice, customerName, customerPhone, notes } = result.data
 
     // Atomic transaction: verify stock + create sale + decrement stock + log.
     // On SQLite the single-writer lock prevents the race; on Postgres this
@@ -123,99 +113,30 @@ export async function POST(request: NextRequest) {
         throw new Error(`INSUFFICIENT_STOCK:${part.currentStock}`)
       }
 
-      // ─── Customer credit limit enforcement (Phase 4) ──────────────────
-      // If a customerId is provided AND the customer has a creditLimit > 0,
-      // check that their outstanding balance + this sale's total won't
-      // exceed the limit. Outstanding = sum of (totalPrice - amountPaid)
-      // for all their sales where paymentStatus != 'paid'.
-      let linkedCustomer: { id: string; name: string; creditLimit: number; state?: string; gstNumber?: string } | null = null
-      if (customerId) {
-        linkedCustomer = await tx.customer.findFirst({
-          where: { id: customerId, ownerId: user.ownerId },
-          select: { id: true, name: true, creditLimit: true, state: true, gstNumber: true },
-        })
-        if (!linkedCustomer) {
-          throw new Error('CUSTOMER_NOT_FOUND')
-        }
-
-        if (linkedCustomer.creditLimit > 0) {
-          // Sum outstanding across all this customer's sales
-          const outstandingSales = await tx.sale.aggregate({
-            where: {
-              customerId,
-              paymentStatus: { in: ['partial', 'unpaid'] },
-            },
-            _sum: { totalPrice: true, amountPaid: true },
-          })
-          const outstanding =
-            (outstandingSales._sum.totalPrice ?? 0) - (outstandingSales._sum.amountPaid ?? 0)
-
-          // We can't know the final sale total yet (GST/discount not computed).
-          // Use the worst-case: subtotal = unitPriceOverride × qty
-          const estimatedTotal =
-            (unitPriceOverride ?? part.sellingPrice) * quantity * (1 + (taxRateOverride ?? 0) / 100)
-
-          if (outstanding + estimatedTotal > linkedCustomer.creditLimit) {
-            throw new Error(
-              `CREDIT_LIMIT_EXCEEDED:${outstanding}:${estimatedTotal}:${linkedCustomer.creditLimit}`
-            )
-          }
-        }
-      }
-
-      const effectiveUnitPrice = unitPriceOverride ?? part.sellingPrice
+      const effectiveUnitPrice = unitPrice ?? part.sellingPrice
       const subtotal = effectiveUnitPrice * quantity
 
-      // Business-logic guard: refuse to record a sale at a price below
-      // the part's cost price unless the caller explicitly opts in.
-      if (!allowBelowCost && effectiveUnitPrice < part.costPrice) {
-        throw new Error(
-          `BELOW_COST:${effectiveUnitPrice}:${part.costPrice}`
-        )
-      }
-
-      // ─── Compute discount ─────────────────────────────────────────────
+      // ─── GST calculation (Phase 3) ─────────────────────────────────────
+      // Auto-lookup tax rate from TaxRate table by part category, or use
+      // the rate passed in the request body. Compute discount, then GST.
+      const discount = Number((body as { discount?: number })?.discount || 0)
+      const discountType = (body as { discountType?: string })?.discountType === 'percent' ? 'percent' : 'flat'
       const discountAmount = computeDiscountAmount(subtotal, discount, discountType)
 
-      // ─── Compute tax (auto-lookup if not provided) ────────────────────
-      let taxRate = taxRateOverride
-      let hsnCode = hsnCodeOverride
-
-      if (taxRate === undefined) {
+      let taxRate = Number((body as { taxRate?: number })?.taxRate)
+      if (!Number.isFinite(taxRate)) {
         const lookedUp = await lookupTaxRate(user.ownerId, part.category)
         taxRate = lookedUp?.rate ?? 0
-        if (!hsnCode && lookedUp?.hsnCode) hsnCode = lookedUp.hsnCode
       }
+      const isInterState = Boolean((body as { isInterState?: boolean })?.isInterState)
+      const gst = calculateGST({ subtotal, discountAmount, taxRate, isInterState, currency: part.currency })
+      const totalPrice = gst.grandTotal
 
-      // Determine inter-state: if caller didn't specify, try to derive from
-      // the customer's GSTIN (if linked) or default to intra-state.
-      let isInterState = isInterStateOverride ?? false
-      if (isInterStateOverride === undefined) {
-        // Look up the shop's GSTIN from AppSettings (key: 'shop_gstin')
-        // OR from the Shop model if a shopId is set on the sale
-        const shopGstinSetting = await tx.appSetting.findFirst({
-          where: { ownerId: user.ownerId, key: 'shop_gstin' },
-        })
-        const shopStateCode = shopGstinSetting?.value
-          ? getStateCodeFromGSTIN(shopGstinSetting.value)
-          : null
-
-        // Try to get customer's state code from their GSTIN (if linked)
-        const customerStateCode = linkedCustomer?.gstNumber
-          ? getStateCodeFromGSTIN(linkedCustomer.gstNumber)
-          : null
-
-        // If we have both, use them. Otherwise default to intra-state.
-        isInterState = isInterStateSale(shopStateCode, customerStateCode)
+      // Business-logic guard: refuse below-cost sales
+      const allowBelowCost = Boolean((body as { allowBelowCost?: unknown })?.allowBelowCost === true)
+      if (!allowBelowCost && effectiveUnitPrice < part.costPrice) {
+        throw new Error(`BELOW_COST:${effectiveUnitPrice}:${part.costPrice}`)
       }
-
-      const gst = calculateGST({
-        subtotal,
-        discountAmount,
-        taxRate,
-        isInterState,
-        currency: part.currency,
-      })
 
       // Generate a collision-resistant invoice number using a per-day
       // counter instead of Math.random (which had only 90k values and
@@ -230,27 +151,17 @@ export async function POST(request: NextRequest) {
       const seq = String(salesToday + 1).padStart(5, '0')
       const invoiceNumber = `INV-${dateStr}-${seq}`
 
-      // ─── Payment tracking ─────────────────────────────────────────────
-      // Default: fully paid. Caller can override to record partial / unpaid.
-      const finalTotal = gst.grandTotal
-      const amountPaid = amountPaidOverride !== undefined ? amountPaidOverride : finalTotal
-      const paymentStatus =
-        amountPaid >= finalTotal ? 'paid' :
-        amountPaid > 0 ? 'partial' :
-        'unpaid'
-
       const newSale = await tx.sale.create({
         data: {
           ownerId: user.ownerId,
           partId,
           quantity,
           unitPrice: effectiveUnitPrice,
-          totalPrice: finalTotal,
+          totalPrice,
           customerName,
           customerPhone,
           notes,
           invoiceNumber,
-          customerId: linkedCustomer?.id || null,
           // GST fields
           taxRate: gst.taxRate,
           cgstRate: gst.cgstRate,
@@ -264,26 +175,11 @@ export async function POST(request: NextRequest) {
           discount,
           discountType,
           discountAmount,
-          hsnCode,
-          // Payment tracking
-          amountPaid,
-          paymentStatus,
+          // Payment tracking (default: fully paid)
+          amountPaid: totalPrice,
+          paymentStatus: 'paid',
         },
       })
-
-      // ─── Record the initial payment (if any) ─────────────────────────
-      if (amountPaid > 0) {
-        await tx.payment.create({
-          data: {
-            ownerId: user.ownerId,
-            saleId: newSale.id,
-            amount: amountPaid,
-            method: paymentMethod,
-            reference: paymentReference,
-            notes: amountPaid >= finalTotal ? 'Full payment on sale' : 'Partial payment on sale',
-          },
-        })
-      }
 
       const previousStock = part.currentStock
       const newStock = previousStock - quantity
@@ -293,8 +189,7 @@ export async function POST(request: NextRequest) {
         data: { currentStock: newStock },
       })
 
-      await tx.stockLog.create({
-        data: {
+      await tx.stockLog.create({        data: {
           ownerId: user.ownerId,
           partId,
           type: 'SALE',
@@ -305,29 +200,6 @@ export async function POST(request: NextRequest) {
           notes: `Sale to ${customerName || 'Walk-in customer'}`,
         },
       })
-
-      // ─── FEFO batch deduction (Phase 6) ──────────────────────────────
-      // If the part has batches with expiry tracking, deduct from the
-      // earliest-expiring batch first. Best-effort — silently skipped if
-      // the part has no batches or the FEFO calculation fails.
-      try {
-        const { suggestBatches, applyFefoPick } = await import('@/lib/fefo')
-        const fefo = await suggestBatches(partId, quantity, false)
-        if (fefo.suggestions.length > 0 && fefo.totalFulfillable > 0) {
-          await applyFefoPick(
-            tx,
-            fefo.suggestions,
-            user.ownerId,
-            null,  // shopId — passed via the sale below
-            partId,
-            newSale.id,
-            `Sale ${newSale.invoiceNumber}`
-          )
-        }
-      } catch (fefoErr) {
-        // Don't fail the sale if FEFO fails — just log + continue
-        console.error('[sales/POST] FEFO pick failed (non-fatal):', fefoErr)
-      }
 
       return newSale
     })
@@ -345,9 +217,6 @@ export async function POST(request: NextRequest) {
         partId,
         quantity,
         totalPrice: sale.totalPrice,
-        taxRate: sale.taxRate,
-        discountAmount: sale.discountAmount,
-        paymentStatus: sale.paymentStatus,
       },
     })
 
@@ -377,27 +246,6 @@ export async function POST(request: NextRequest) {
             code: 'BELOW_COST',
             unitPrice: Number(unitP),
             costPrice: Number(costP),
-          },
-          { status: 400 }
-        )
-      }
-      if (error.message === 'CUSTOMER_NOT_FOUND') {
-        return NextResponse.json({ error: 'Linked customer not found' }, { status: 404 })
-      }
-      if (error.message.startsWith('CREDIT_LIMIT_EXCEEDED:')) {
-        const [, outstanding, newAmount, limit] = error.message.split(':')
-        return NextResponse.json(
-          {
-            error:
-              `Credit limit exceeded. Outstanding: ₹${Number(outstanding).toFixed(2)}, ` +
-              `this sale: ₹${Number(newAmount).toFixed(2)}, ` +
-              `limit: ₹${Number(limit).toFixed(2)}. ` +
-              'Record a payment against the customer\'s outstanding balance first, ' +
-              'or increase their credit limit.',
-            code: 'CREDIT_LIMIT_EXCEEDED',
-            outstanding: Number(outstanding),
-            newAmount: Number(newAmount),
-            limit: Number(limit),
           },
           { status: 400 }
         )

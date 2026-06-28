@@ -5,8 +5,8 @@ export async function GET(
   request: Parameters<typeof guardAuth>[0]
 ) {
   try {
-    const [_user, authErr] = await guardAuth(request)
-    if (authErr) return authErr
+    const [user, authErr] = await guardAuth(request)
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const openwaApiUrl = process.env.OPENWA_API_URL
     const openwaApiKey = process.env.OPENWA_API_KEY

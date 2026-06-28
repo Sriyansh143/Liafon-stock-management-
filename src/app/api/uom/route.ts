@@ -1,19 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { guardAuth } from '@/lib/api-utils'
-import { COMMON_UOMS } from '@/lib/uom'
+import { guardAuth, logApiError } from '@/lib/api-utils'
 
-/**
- * GET /api/uom
- *   Returns the list of common UOMs (Unit of Measure) for dropdowns.
- *   Static list — no DB query needed.
- */
+const COMMON_UOMS = [
+  { code: 'PCS', name: 'Piece', symbol: 'pcs' },
+  { code: 'BOX', name: 'Box', symbol: 'box' },
+  { code: 'PKT', name: 'Packet', symbol: 'pkt' },
+  { code: 'SET', name: 'Set', symbol: 'set' },
+  { code: 'PAIR', name: 'Pair', symbol: 'pair' },
+  { code: 'KG', name: 'Kilogram', symbol: 'kg' },
+  { code: 'GM', name: 'Gram', symbol: 'g' },
+  { code: 'LTR', name: 'Litre', symbol: 'L' },
+  { code: 'ML', name: 'Millilitre', symbol: 'mL' },
+  { code: 'MTR', name: 'Metre', symbol: 'm' },
+  { code: 'CM', name: 'Centimetre', symbol: 'cm' },
+  { code: 'ROLL', name: 'Roll', symbol: 'roll' },
+  { code: 'BAG', name: 'Bag', symbol: 'bag' },
+  { code: 'DRM', name: 'Drum', symbol: 'drum' },
+  { code: 'DOZEN', name: 'Dozen (12)', symbol: 'dz' },
+  { code: 'GROSS', name: 'Gross (144)', symbol: 'gr' },
+  { code: 'NOS', name: 'Numbers', symbol: 'nos' },
+  { code: 'UNIT', name: 'Unit', symbol: 'unit' },
+]
 
 export async function GET(request: NextRequest) {
-  const [user, authErr] = await guardAuth(request)
-  if (authErr || !user) return authErr ?? NextResponse.json({ error: 'Authentication required' }, { status: 401 })
-
-  return NextResponse.json({
-    uoms: COMMON_UOMS,
-    total: COMMON_UOMS.length,
-  })
+  try {
+    const [user, authErr] = await guardAuth(request)
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: 'Auth required' }, { status: 401 })
+    return NextResponse.json({ uoms: COMMON_UOMS, total: COMMON_UOMS.length })
+  } catch (error) { logApiError('uom/GET', error); return NextResponse.json({ error: 'Failed' }, { status: 500 }) }
 }

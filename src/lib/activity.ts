@@ -84,40 +84,14 @@ export async function logUserActivity(
  * Extract the client IP from a request, handling Vercel proxy headers.
  * Falls back to '127.0.0.1' if no headers are found (prevents empty
  * string hashing issues in IP duplicate detection).
- *
- * Header priority (most → least reliable on Vercel):
- *   1. x-vercel-forwarded-for   — Vercel's preferred header
- *   2. x-forwarded-for          — Standard proxy header (CDNs, nginx)
- *   3. x-real-ip                — Nginx / Cloudflare
- *   4. request.ip               — Next.js built-in (Vercel Edge runtime)
- *   5. '127.0.0.1'              — Ultimate fallback
  */
 export function getClientIP(request?: Request | NextRequest): string {
   if (!request) return '127.0.0.1'
   const headers = new Headers(request.headers)
-
-  // 1. Vercel's preferred header (most reliable on Vercel)
-  const vercelFwd = headers.get('x-vercel-forwarded-for')?.split(',')[0]?.trim()
-  if (vercelFwd) return vercelFwd
-
-  // 2. Standard proxy header (most common across CDNs)
-  const xFwd = headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-  if (xFwd) return xFwd
-
-  // 3. Nginx / Cloudflare
-  const xRealIp = headers.get('x-real-ip')
-  if (xRealIp) return xRealIp
-
-  // 4. Next.js built-in IP (works on Vercel Edge runtime).
-  //    `request.ip` exists on NextRequest at runtime but is NOT part of
-  //    the standard Request type, so TypeScript can't narrow it via
-  //    `'ip' in request` alone (it infers the property as `{}`).
-  //    We cast through `unknown` and check `typeof` to narrow safely.
-  if ('ip' in request) {
-    const ip = (request as { ip?: unknown }).ip
-    if (typeof ip === 'string' && ip.length > 0) return ip
-  }
-
-  // 5. Ultimate fallback (prevents empty string hashes)
-  return '127.0.0.1'
+  return (
+    headers.get('x-vercel-forwarded-for')?.split(',')[0]?.trim() ||
+    headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+    headers.get('x-real-ip') ||
+    '127.0.0.1'
+  )
 }

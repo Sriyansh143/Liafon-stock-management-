@@ -1,0 +1,169 @@
+-- Liafon Stock Management — Full Migration (v1 → v9)
+-- Run in Supabase SQL Editor. Idempotent. Safe to re-run.
+BEGIN;
+
+-- NEW TABLES
+CREATE TABLE IF NOT EXISTS "Shop" (
+    "id" TEXT NOT NULL, "ownerId" TEXT NOT NULL DEFAULT '', "name" TEXT NOT NULL,
+    "address" TEXT NOT NULL DEFAULT '', "city" TEXT NOT NULL DEFAULT '', "state" TEXT NOT NULL DEFAULT '',
+    "pincode" TEXT NOT NULL DEFAULT '', "phone" TEXT NOT NULL DEFAULT '', "email" TEXT NOT NULL DEFAULT '',
+    "gstin" TEXT NOT NULL DEFAULT '', "latitude" DOUBLE PRECISION, "longitude" DOUBLE PRECISION,
+    "isActive" BOOLEAN NOT NULL DEFAULT true, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL, CONSTRAINT "Shop_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "Shop_ownerId_name_key" ON "Shop"("ownerId", "name");
+CREATE INDEX IF NOT EXISTS "Shop_ownerId_idx" ON "Shop"("ownerId");
+
+CREATE TABLE IF NOT EXISTS "Batch" (
+    "id" TEXT NOT NULL, "ownerId" TEXT NOT NULL DEFAULT '', "partId" TEXT NOT NULL,
+    "batchNumber" TEXT NOT NULL DEFAULT '', "serialNumber" TEXT NOT NULL DEFAULT '',
+    "quantity" INTEGER NOT NULL DEFAULT 0, "expiryDate" TIMESTAMP(3), "manufactureDate" TIMESTAMP(3),
+    "unitCost" DOUBLE PRECISION NOT NULL DEFAULT 0, "supplierId" TEXT, "purchaseOrderId" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "Batch_pkey" PRIMARY KEY ("id")
+);
+CREATE INDEX IF NOT EXISTS "Batch_partId_idx" ON "Batch"("partId");
+
+CREATE TABLE IF NOT EXISTS "PurchaseOrder" (
+    "id" TEXT NOT NULL, "ownerId" TEXT NOT NULL DEFAULT '', "shopId" TEXT, "poNumber" TEXT NOT NULL,
+    "supplierId" TEXT, "status" TEXT NOT NULL DEFAULT 'draft', "draftedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "approvedAt" TIMESTAMP(3), "approvedById" TEXT, "receivedAt" TIMESTAMP(3), "receivedById" TEXT,
+    "cancelledAt" TIMESTAMP(3), "totalAmount" DOUBLE PRECISION NOT NULL DEFAULT 0, "currency" TEXT NOT NULL DEFAULT 'INR',
+    "notes" TEXT NOT NULL DEFAULT '', "lineItems" TEXT NOT NULL DEFAULT '[]',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "PurchaseOrder_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "PurchaseOrder_poNumber_key" ON "PurchaseOrder"("poNumber");
+
+CREATE TABLE IF NOT EXISTS "StockTransfer" (
+    "id" TEXT NOT NULL, "ownerId" TEXT NOT NULL DEFAULT '', "transferNumber" TEXT NOT NULL,
+    "fromShopId" TEXT NOT NULL, "toShopId" TEXT NOT NULL, "partId" TEXT NOT NULL, "toPartId" TEXT,
+    "quantity" INTEGER NOT NULL, "status" TEXT NOT NULL DEFAULT 'pending', "shippedAt" TIMESTAMP(3),
+    "receivedAt" TIMESTAMP(3), "notes" TEXT NOT NULL DEFAULT '',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "StockTransfer_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "StockTransfer_transferNumber_key" ON "StockTransfer"("transferNumber");
+
+CREATE TABLE IF NOT EXISTS "Payment" (
+    "id" TEXT NOT NULL, "ownerId" TEXT NOT NULL DEFAULT '', "saleId" TEXT, "customerId" TEXT,
+    "amount" DOUBLE PRECISION NOT NULL, "method" TEXT NOT NULL DEFAULT 'cash', "reference" TEXT NOT NULL DEFAULT '',
+    "notes" TEXT NOT NULL DEFAULT '', "date" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "upiVpa" TEXT NOT NULL DEFAULT '',
+    "upiPhone" TEXT NOT NULL DEFAULT '', "upiQrScanned" BOOLEAN NOT NULL DEFAULT false, "upiQrImage" TEXT NOT NULL DEFAULT '',
+    CONSTRAINT "Payment_pkey" PRIMARY KEY ("id")
+);
+
+CREATE TABLE IF NOT EXISTS "TaxRate" (
+    "id" TEXT NOT NULL, "ownerId" TEXT NOT NULL DEFAULT '', "category" TEXT NOT NULL,
+    "rate" DOUBLE PRECISION NOT NULL DEFAULT 0, "hsnCode" TEXT NOT NULL DEFAULT '', "description" TEXT NOT NULL DEFAULT '',
+    "isActive" BOOLEAN NOT NULL DEFAULT true, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL, CONSTRAINT "TaxRate_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "TaxRate_ownerId_category_key" ON "TaxRate"("ownerId", "category");
+
+CREATE TABLE IF NOT EXISTS "PartAlternative" (
+    "id" TEXT NOT NULL, "ownerId" TEXT NOT NULL DEFAULT '', "partId" TEXT NOT NULL, "alternativePartId" TEXT NOT NULL,
+    "reason" TEXT NOT NULL DEFAULT '', "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "PartAlternative_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "PartAlternative_partId_alternativePartId_key" ON "PartAlternative"("partId", "alternativePartId");
+
+CREATE TABLE IF NOT EXISTS "HsnCode" (
+    "id" TEXT NOT NULL, "code" TEXT NOT NULL, "description" TEXT NOT NULL DEFAULT '',
+    "rate" DOUBLE PRECISION NOT NULL DEFAULT 0, "category" TEXT NOT NULL DEFAULT '',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "HsnCode_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "HsnCode_code_key" ON "HsnCode"("code");
+
+CREATE TABLE IF NOT EXISTS "CategoryField" (
+    "id" TEXT NOT NULL, "ownerId" TEXT NOT NULL DEFAULT '', "category" TEXT NOT NULL, "fieldName" TEXT NOT NULL,
+    "fieldType" TEXT NOT NULL DEFAULT 'text', "fieldOptions" TEXT NOT NULL DEFAULT '[]', "isRequired" BOOLEAN NOT NULL DEFAULT false,
+    "sortOrder" INTEGER NOT NULL DEFAULT 0, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "CategoryField_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "CategoryField_ownerId_category_fieldName_key" ON "CategoryField"("ownerId", "category", "fieldName");
+
+CREATE TABLE IF NOT EXISTS "PartMeta" (
+    "id" TEXT NOT NULL, "ownerId" TEXT NOT NULL DEFAULT '', "partId" TEXT NOT NULL, "categoryFieldId" TEXT NOT NULL,
+    "value" TEXT NOT NULL DEFAULT '', "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "PartMeta_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "PartMeta_partId_categoryFieldId_key" ON "PartMeta"("partId", "categoryFieldId");
+
+CREATE TABLE IF NOT EXISTS "StockCount" (
+    "id" TEXT NOT NULL, "ownerId" TEXT NOT NULL DEFAULT '', "shopId" TEXT, "countNumber" TEXT NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'draft', "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "finalizedAt" TIMESTAMP(3), "finalizedById" TEXT, "notes" TEXT NOT NULL DEFAULT '',
+    "totalItems" INTEGER NOT NULL DEFAULT 0, "matchedItems" INTEGER NOT NULL DEFAULT 0, "varianceItems" INTEGER NOT NULL DEFAULT 0,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "StockCount_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "StockCount_countNumber_key" ON "StockCount"("countNumber");
+
+CREATE TABLE IF NOT EXISTS "StockCountItem" (
+    "id" TEXT NOT NULL, "stockCountId" TEXT NOT NULL, "partId" TEXT NOT NULL,
+    "expectedQty" INTEGER NOT NULL DEFAULT 0, "countedQty" INTEGER, "variance" INTEGER NOT NULL DEFAULT 0,
+    "notes" TEXT NOT NULL DEFAULT '', "countedAt" TIMESTAMP(3), "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "StockCountItem_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "StockCountItem_stockCountId_partId_key" ON "StockCountItem"("stockCountId", "partId");
+
+CREATE TABLE IF NOT EXISTS "SaleReturn" (
+    "id" TEXT NOT NULL, "ownerId" TEXT NOT NULL DEFAULT '', "saleId" TEXT NOT NULL, "returnNumber" TEXT NOT NULL,
+    "quantity" INTEGER NOT NULL, "refundAmount" DOUBLE PRECISION NOT NULL DEFAULT 0, "reason" TEXT NOT NULL DEFAULT '',
+    "condition" TEXT NOT NULL DEFAULT 'resellable', "restocked" BOOLEAN NOT NULL DEFAULT true, "notes" TEXT NOT NULL DEFAULT '',
+    "processedById" TEXT, "date" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "SaleReturn_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "SaleReturn_returnNumber_key" ON "SaleReturn"("returnNumber");
+
+CREATE TABLE IF NOT EXISTS "StockReservation" (
+    "id" TEXT NOT NULL, "ownerId" TEXT NOT NULL DEFAULT '', "partId" TEXT NOT NULL, "quantity" INTEGER NOT NULL,
+    "reservedBy" TEXT NOT NULL DEFAULT '', "reason" TEXT NOT NULL DEFAULT '', "expiresAt" TIMESTAMP(3) NOT NULL,
+    "isActive" BOOLEAN NOT NULL DEFAULT true, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "StockReservation_pkey" PRIMARY KEY ("id")
+);
+
+-- NEW COLUMNS ON EXISTING TABLES
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "twoFactorEnabled" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "twoFactorSecret" TEXT;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "shopId" TEXT;
+
+ALTER TABLE "SparePart" ADD COLUMN IF NOT EXISTS "shopId" TEXT;
+ALTER TABLE "SparePart" ADD COLUMN IF NOT EXISTS "imageUrl" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "SparePart" ADD COLUMN IF NOT EXISTS "baseUom" TEXT NOT NULL DEFAULT 'PCS';
+ALTER TABLE "SparePart" ADD COLUMN IF NOT EXISTS "purchaseUom" TEXT NOT NULL DEFAULT 'PCS';
+ALTER TABLE "SparePart" ADD COLUMN IF NOT EXISTS "purchaseToBaseConversion" DOUBLE PRECISION NOT NULL DEFAULT 1;
+ALTER TABLE "SparePart" ADD COLUMN IF NOT EXISTS "sellingUom" TEXT NOT NULL DEFAULT 'PCS';
+ALTER TABLE "SparePart" ADD COLUMN IF NOT EXISTS "sellingToBaseConversion" DOUBLE PRECISION NOT NULL DEFAULT 1;
+
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "shopId" TEXT;
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "taxRate" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "cgstRate" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "cgstAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "sgstRate" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "sgstAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "igstRate" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "igstAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "taxableValue" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "discount" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "discountType" TEXT NOT NULL DEFAULT 'flat';
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "discountAmount" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "hsnCode" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "amountPaid" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "paymentStatus" TEXT NOT NULL DEFAULT 'paid';
+
+ALTER TABLE "Purchase" ADD COLUMN IF NOT EXISTS "shopId" TEXT;
+ALTER TABLE "StockLog" ADD COLUMN IF NOT EXISTS "shopId" TEXT;
+ALTER TABLE "Customer" ADD COLUMN IF NOT EXISTS "shopId" TEXT;
+ALTER TABLE "Customer" ADD COLUMN IF NOT EXISTS "gstNumber" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "Customer" ADD COLUMN IF NOT EXISTS "state" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "Customer" ADD COLUMN IF NOT EXISTS "creditLimit" DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE "Supplier" ADD COLUMN IF NOT EXISTS "shopId" TEXT;
+
+-- BACKFILL existing sales as fully paid
+UPDATE "Sale" SET "amountPaid" = "totalPrice" WHERE "amountPaid" = 0 AND "totalPrice" > 0;
+UPDATE "Sale" SET "paymentStatus" = 'paid' WHERE "paymentStatus" = 'paid' AND "amountPaid" >= "totalPrice";
+
+COMMIT;

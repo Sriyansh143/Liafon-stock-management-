@@ -8,25 +8,7 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-// ─── Supabase + Vercel note ──────────────────────────────────────────────
-// On Vercel you MUST set BOTH env vars (in the Vercel dashboard):
-//
-//   DATABASE_URL = postgresql://postgres.xxxxxx:PASSWORD@aws-0-region.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1
-//                  ↑ Pooler URL — used by the runtime Prisma client.
-//                  Port 6543, with pgbouncer=true so each serverless function
-//                  shares a pooled connection instead of opening its own.
-//
-//   DIRECT_URL   = postgresql://postgres.xxxxxx:PASSWORD@aws-0-region.pooler.supabase.com:5432/postgres
-//                  ↑ Direct URL — used by `prisma migrate deploy` and
-//                  `prisma db push` at build time. Port 5432, NO pgbouncer.
-//                  Migrations need a real Postgres connection, not a pooler.
-//
-// Supabase shows both URLs in: Dashboard → Project Settings → Database → Connection string.
-// Pick "Session pooler" or "Transaction pooler" for DATABASE_URL, and "Direct connection" for DIRECT_URL.
-
-// ─── Multi-Tenant Models ────────────────────────────────────────────────
-// ownerId is nullable with default "" for migration compatibility.
-// New records always get a proper ownerId set by the API.
+// ─── Multi-Tenant Models ────────────────────────────────────────────────────
 
 model User {
   id            String   @id @default(cuid())
@@ -41,26 +23,11 @@ model User {
   updatedAt     DateTime @updatedAt
   ownerId       String   @default("")
   ipHash        String?
-
-  // ─── 2FA / TOTP ──────────────────────────────────────────────────────
-  // When `twoFactorEnabled` is true, login requires an additional 6-digit
-  // TOTP code from the user's authenticator app (Google Authenticator,
-  // Authy, 1Password, etc.). `twoFactorSecret` is the Base32-encoded
-  // shared secret — encrypted at rest would be ideal but requires a
-  // separate `ENCRYPTION_KEY` env var. For now, store as-is (the secret
-  // is only useful combined with the user's password).
   twoFactorEnabled Boolean @default(false)
   twoFactorSecret  String?
-
-  // ─── Multi-shop assignment ───────────────────────────────────────────
-  // A user can be assigned to a single shop (their "home" shop). Users
-  // without a shopId can access all shops (owner/admin). Regular staff
-  // see only their assigned shop's data.
   shopId        String?
   shop          Shop?    @relation(fields: [shopId], references: [id])
-
   activityLogs  ActivityLog[]
-
   @@index([ownerId])
   @@index([email])
   @@index([ipHash])
@@ -82,10 +49,40 @@ model License {
   ip           String   @default("")
   metadata     String   @default("{}")
   plan         String   @default("free")
-
   @@index([ownerId])
   @@index([licenseKey])
   @@index([status])
+}
+
+model Shop {
+  id           String   @id @default(cuid())
+  ownerId      String   @default("")
+  name         String
+  address      String   @default("")
+  city         String   @default("")
+  state        String   @default("")
+  pincode      String   @default("")
+  phone        String   @default("")
+  email        String   @default("")
+  gstin        String   @default("")
+  latitude     Float?
+  longitude    Float?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  users        User[]
+  spareParts   SparePart[]
+  sales        Sale[]
+  purchases    Purchase[]
+  stockLogs    StockLog[]
+  customers    Customer[]
+  suppliers    Supplier[]
+  purchaseOrders PurchaseOrder[]
+  transfersFrom StockTransfer[] @relation("StockTransfer_FromShop")
+  transfersTo   StockTransfer[] @relation("StockTransfer_ToShop")
+  @@unique([ownerId, name])
+  @@index([ownerId])
+  @@index([state])
 }
 
 model SparePart {
@@ -107,20 +104,14 @@ model SparePart {
   isActive      Boolean  @default(true)
   currency      String   @default("INR")
   barcode       String   @default("")
-  // ─── UOM (Unit of Measure) — Phase 6 ──────────────────────────────────
-  // baseUom = the unit stock is tracked in (usually "piece" / "PCS")
-  // purchaseUom = the unit supplier delivers in (e.g. "box of 10")
-  // purchaseToBaseConversion = how many base units in 1 purchase unit
-  // e.g. purchaseUom="BOX", conversion=10 → buying 1 BOX adds 10 PCS to stock
+  imageUrl      String   @default("")
   baseUom                  String   @default("PCS")
   purchaseUom              String   @default("PCS")
   purchaseToBaseConversion Float    @default(1)
-  // Optional: selling UOM if you sell in different units (e.g. per meter)
   sellingUom               String   @default("PCS")
   sellingToBaseConversion  Float    @default(1)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-
   sales     Sale[]
   purchases Purchase[]
   stockLogs StockLog[]
@@ -131,86 +122,30 @@ model SparePart {
   alternativesTo   PartAlternative[] @relation("PartAlternative_To")
   metaValues      PartMeta[]
   stockCountItems StockCountItem[]
-
+  reservations    StockReservation[]
   @@unique([ownerId, partNumber])
   @@index([ownerId])
   @@index([ownerId, category])
   @@index([shopId])
 }
 
-// ─── Multi-Shop / Multi-Branch ──────────────────────────────────────────────
-// An owner can manage multiple shops (branches). Each shop has its own
-// inventory + sales. SparePart.shopId partitions stock per-shop — the same
-// partNumber can exist in multiple shops with independent stock levels.
-//
-// Users with `shopId=null` (owner/admin) see ALL shops. Users with a
-// `shopId` set see only their shop's data (filtering is done at the API
-// layer via the SessionUser's shopId).
-model Shop {
-  id           String   @id @default(cuid())
-  ownerId      String   @default("")
-  name         String
-  // Location fields — used for location-wise analysis
-  address      String   @default("")
-  city         String   @default("")
-  state        String   @default("")   // Indian state (for GST inter-state detection)
-  pincode      String   @default("")
-  phone        String   @default("")
-  email        String   @default("")
-  gstin        String   @default("")   // Shop's GSTIN (used for GST calculation)
-  // Optional: lat/lng for map-based visualizations
-  latitude     Float?
-  longitude    Float?
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  users        User[]
-  spareParts   SparePart[]
-  sales        Sale[]
-  purchases    Purchase[]
-  stockLogs    StockLog[]
-  customers    Customer[]
-  suppliers    Supplier[]
-  purchaseOrders PurchaseOrder[]
-  transfersFrom StockTransfer[] @relation("StockTransfer_FromShop")
-  transfersTo   StockTransfer[] @relation("StockTransfer_ToShop")
-
-  @@unique([ownerId, name])
-  @@index([ownerId])
-  @@index([state])
-}
-
-// ─── Batch / Serial / Expiry tracking ───────────────────────────────────────
-// A SparePart can have multiple Batches (e.g. received at different times,
-// from different suppliers, with different expiry dates). When a sale
-// happens, the user picks which batch to deduct from (FIFO by default).
-// For serialized parts, each unit gets its own Batch entry with serialNumber.
 model Batch {
   id            String   @id @default(cuid())
   ownerId       String   @default("")
   partId        String
   part          SparePart @relation(fields: [partId], references: [id])
-  // Batch identification
-  batchNumber   String   @default("")   // Supplier's batch/lot number
-  serialNumber  String   @default("")   // For serialized parts (unique per unit)
-  // Quantity in this batch (decrements on sale)
+  batchNumber   String   @default("")
+  serialNumber  String   @default("")
   quantity      Int      @default(0)
-  // Expiry tracking (null = no expiry)
   expiryDate    DateTime?
   manufactureDate DateTime?
-  // Cost at which this batch was received (for accurate COGS)
   unitCost      Float    @default(0)
-  // Supplier who provided this batch
   supplierId    String?
   supplier      Supplier? @relation(fields: [supplierId], references: [id])
-  // Purchase order that introduced this batch
   purchaseOrderId String?
   purchaseOrder   PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
-  // Metadata
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-
   @@index([ownerId])
   @@index([partId])
   @@index([expiryDate])
@@ -227,7 +162,6 @@ model Department {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
   @@index([ownerId])
 }
 
@@ -244,19 +178,11 @@ model Customer {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
   sales Sale[]
   payments Payment[]
-
-  // Customer credit limit (0 = no credit allowed). When a customer has
-  // unpaid sales totaling more than this amount, new credit sales are
-  // refused by the API.
-  creditLimit Float  @default(0)   // Max outstanding balance allowed
-
-  // ─── GST fields (for B2B invoices + inter-state detection) ───────────
-  gstNumber  String  @default("")   // Customer's GSTIN
-  state      String  @default("")   // Indian state (for inter-state GST)
-
+  creditLimit Float  @default(0)
+  gstNumber  String  @default("")
+  state      String  @default("")
   @@index([ownerId])
   @@index([shopId])
   @@index([gstNumber])
@@ -276,11 +202,9 @@ model Supplier {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-
   purchases Purchase[]
   batches   Batch[]
   purchaseOrders PurchaseOrder[]
-
   @@index([ownerId])
   @@index([shopId])
 }
@@ -302,46 +226,24 @@ model Sale {
   invoiceNumber String  @default("")
   date         DateTime @default(now())
   createdAt    DateTime @default(now())
-
   customer Customer? @relation(fields: [customerId], references: [id])
   customerId String?
-
-  // ─── GST / Tax fields (added for Indian GST compliance) ──────────────────
-  // All amounts are stored in the sale's currency. For inter-state sales,
-  // only `igstRate` + `igstAmount` are populated. For intra-state sales,
-  // only `cgstRate` + `cgstAmount` + `sgstRate` + `sgstAmount` are populated.
-  // The `taxRate` field is the total tax percentage (e.g. 18 for 18% GST).
-  taxRate      Float    @default(0)   // Total tax % (CGST+SGST or IGST)
-  cgstRate     Float    @default(0)   // Central GST %  (intra-state only)
+  taxRate      Float    @default(0)
+  cgstRate     Float    @default(0)
   cgstAmount   Float    @default(0)
-  sgstRate     Float    @default(0)   // State GST %      (intra-state only)
+  sgstRate     Float    @default(0)
   sgstAmount   Float    @default(0)
-  igstRate     Float    @default(0)   // Integrated GST % (inter-state only)
+  igstRate     Float    @default(0)
   igstAmount   Float    @default(0)
-  taxableValue Float    @default(0)   // Subtotal before tax (after discount)
-
-  // ─── Discount fields ──────────────────────────────────────────────────────
-  // `discount` is the numeric value; `discountType` determines whether it's
-  // a flat amount ('flat') or a percentage ('percent'). The discount is
-  // applied to the line subtotal (unitPrice * quantity) before tax.
+  taxableValue Float    @default(0)
   discount       Float   @default(0)
-  discountType   String  @default("flat")   // 'flat' | 'percent'
-  discountAmount Float   @default(0)         // Computed: actual discount in currency
-
-  // HSN/SAC code for GST filing (e.g. "8708" for auto parts)
+  discountType   String  @default("flat")
+  discountAmount Float   @default(0)
   hsnCode        String  @default("")
-
-  // ─── Payment tracking (added for credit / partial payment support) ───────
-  // `amountPaid` tracks how much has been collected. When `amountPaid` >=
-  // `totalPrice`, the sale is fully paid. The `Payment` model records each
-  // individual payment (cash, card, UPI, etc.). The legacy `Payment` table
-  // is new — existing sales get `amountPaid = totalPrice` (fully paid) via
-  // a backfill migration.
   amountPaid   Float    @default(0)
-  paymentStatus String  @default("paid")   // 'paid' | 'partial' | 'unpaid'
-
+  paymentStatus String  @default("paid")
   payments     Payment[]
-
+  returns      SaleReturn[]
   @@index([ownerId])
   @@index([ownerId, date])
   @@index([partId])
@@ -349,10 +251,6 @@ model Sale {
   @@index([paymentStatus])
 }
 
-// ─── Payment tracking (partial payments, credit, receivables) ──────────────
-// Each Payment is one transaction against a Sale (or a Customer account
-// credit). Multiple payments can be recorded against a single sale to
-// support installments / partial payments.
 model Payment {
   id            String   @id @default(cuid())
   ownerId       String   @default("")
@@ -361,23 +259,15 @@ model Payment {
   customerId    String?
   customer      Customer? @relation(fields: [customerId], references: [id])
   amount        Float
-  method        String   @default("cash")   // 'cash' | 'card' | 'upi' | 'bank' | 'cheque' | 'other'
-  reference     String   @default("")       // Transaction ID, cheque no., etc.
+  method        String   @default("cash")
+  reference     String   @default("")
   notes         String   @default("")
   date          DateTime @default(now())
   createdAt     DateTime @default(now())
-
-  // ─── UPI payment fields (added for India UPI integration) ─────────────
-  // When method='upi', these fields are populated:
-  //   upiVpa       — Payer's VPA (e.g. customer@okhdfcbank)
-  //   upiPhone     — Payer's phone linked to UPI
-  //   upiQrScanned — Whether a QR image was uploaded + decoded (vs manual entry)
-  //   upiQrImage   — Path/URL to the stored QR image (if uploaded)
   upiVpa        String   @default("")
   upiPhone      String   @default("")
   upiQrScanned  Boolean  @default(false)
   upiQrImage    String   @default("")
-
   @@index([ownerId])
   @@index([saleId])
   @@index([customerId])
@@ -385,21 +275,16 @@ model Payment {
   @@index([method])
 }
 
-// ─── Tax Rate catalog (per-category GST rates for auto-calculation) ─────────
-// Owner can configure GST rates per category (e.g. "Brakes" → 28%).
-// When a sale is created without an explicit taxRate, the API looks up
-// the part's category in this table and uses the matching rate.
 model TaxRate {
   id          String   @id @default(cuid())
   ownerId     String   @default("")
-  category    String                     // e.g. "Brakes", "Engine", "Uncategorized"
-  rate        Float    @default(0)       // Total GST % (e.g. 18 for 18%)
-  hsnCode     String   @default("")      // HSN/SAC code for filing
+  category    String
+  rate        Float    @default(0)
+  hsnCode     String   @default("")
   description String   @default("")
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-
   @@unique([ownerId, category])
   @@index([ownerId])
 }
@@ -421,10 +306,8 @@ model Purchase {
   invoiceNumber String  @default("")
   date         DateTime @default(now())
   createdAt    DateTime @default(now())
-
   supplier Supplier? @relation(fields: [supplierId], references: [id])
   supplierId String?
-
   @@index([ownerId])
   @@index([ownerId, date])
   @@index([partId])
@@ -446,9 +329,9 @@ model StockLog {
   notes        String   @default("")
   date         DateTime @default(now())
   createdAt    DateTime @default(now())
-
   @@index([ownerId])
   @@index([partId])
+  @@index([shopId])
 }
 
 model ActivityLog {
@@ -464,7 +347,6 @@ model ActivityLog {
   ipAddress   String   @default("")
   createdAt   DateTime @default(now())
   logHash     String?
-
   @@index([ownerId])
   @@index([userId])
 }
@@ -475,7 +357,6 @@ model AppSetting {
   key       String
   value     String
   updatedAt DateTime @updatedAt
-
   @@unique([ownerId, key])
   @@index([ownerId])
 }
@@ -487,84 +368,57 @@ model PasswordReset {
   expiresAt DateTime
   used      Boolean  @default(false)
   createdAt DateTime @default(now())
-
   @@index([email])
   @@index([token])
 }
 
-// ─── Purchase Order workflow (draft → approved → received → cancelled) ──────
-// Replaces the retroactive "Purchase" model for proper procurement:
-//   1. Manager creates a draft PO (lines = parts + qty + estimated cost)
-//   2. Owner/admin approves → status='approved'
-//   3. When goods arrive: owner marks 'received' → stock incremented,
-//      Batches created (with batch no. + expiry), Purchase records generated.
-//   4. Can be cancelled at any time before 'received'.
-//
-// Existing Purchase records remain for historical data; new procurement
-// should go through POs.
 model PurchaseOrder {
   id            String   @id @default(cuid())
   ownerId       String   @default("")
   shopId        String?
   shop          Shop?    @relation(fields: [shopId], references: [id])
-  poNumber      String   @unique             // PO-YYYYMMDD-NNNNN
+  poNumber      String   @unique
   supplierId    String?
   supplier      Supplier? @relation(fields: [supplierId], references: [id])
-  // Status lifecycle
-  status        String   @default("draft")   // 'draft' | 'approved' | 'received' | 'cancelled'
-  // Workflow timestamps
+  status        String   @default("draft")
   draftedAt     DateTime @default(now())
   approvedAt    DateTime?
   approvedById  String?
   receivedAt    DateTime?
   receivedById  String?
   cancelledAt   DateTime?
-  // Totals (computed from line items)
   totalAmount   Float    @default(0)
   currency      String   @default("INR")
   notes         String   @default("")
-  // Line items stored as JSON array (simpler than a separate POLine model
-  // for the typical <50-line PO). Each line: { partId, partNumber, name,
-  // quantity, unitCost, totalCost, batchNumber, expiryDate }
   lineItems     String   @default("[]")
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-
   batches       Batch[]
-
   @@index([ownerId])
   @@index([shopId])
   @@index([supplierId])
   @@index([status])
 }
 
-// ─── Stock Transfers between shops ──────────────────────────────────────────
-// When an owner has multiple shops, they can transfer stock between them.
-// Flow: create transfer (status='pending') → mark 'shipped' → mark 'received'
-// On 'received': source shop's stock decremented, destination shop's stock
-// incremented (or a new SparePart row created if the part doesn't exist there).
 model StockTransfer {
   id            String   @id @default(cuid())
   ownerId       String   @default("")
-  transferNumber String  @unique             // TR-YYYYMMDD-NNNNN
+  transferNumber String  @unique
   fromShopId    String
   fromShop      Shop     @relation("StockTransfer_FromShop", fields: [fromShopId], references: [id])
   toShopId      String
   toShop        Shop     @relation("StockTransfer_ToShop", fields: [toShopId], references: [id])
   partId        String
   part          SparePart @relation("StockTransfer_FromPart", fields: [partId], references: [id])
-  // The part at the destination shop (linked after receipt, for audit trail)
   toPartId      String?
   toPart        SparePart? @relation("StockTransfer_ToPart", fields: [toPartId], references: [id])
   quantity      Int
-  // Status: 'pending' → 'shipped' → 'received' (or 'cancelled')
   status        String   @default("pending")
   shippedAt     DateTime?
   receivedAt    DateTime?
   notes         String   @default("")
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-
   @@index([ownerId])
   @@index([fromShopId])
   @@index([toShopId])
@@ -572,70 +426,49 @@ model StockTransfer {
   @@index([status])
 }
 
-// ─── Item Alternatives (interchangeable part numbers) ──────────────────────
-// Auto-parts shops live on OEM cross-references — one brake pad fits many
-// vehicles, and a single vehicle can use parts from multiple OEMs.
-// `SparePart.alternatives` is a self-referential many-to-many:
-//   part A "alternative to" part B  →  if A is out of stock, suggest B.
-//
-// Inspired by ERPNext item alternatives + InvenTree supplier cross-ref.
 model PartAlternative {
   id           String   @id @default(cuid())
   ownerId      String   @default("")
-  partId       String                     // The "source" part
+  partId       String
   part         SparePart @relation("PartAlternative_From", fields: [partId], references: [id])
-  alternativePartId String                // The "alternative" part
+  alternativePartId String
   alternativePart   SparePart @relation("PartAlternative_To", fields: [alternativePartId], references: [id])
-  reason       String   @default("")      // e.g. "OEM cross-reference", "Fits same vehicle"
+  reason       String   @default("")
   createdAt    DateTime @default(now())
-
   @@unique([partId, alternativePartId])
   @@index([ownerId])
   @@index([partId])
   @@index([alternativePartId])
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PHASE 6 — UOM, HSN master, Custom fields, Stock count
-// ═══════════════════════════════════════════════════════════════════════════
-
-// ─── HSN Code master (preloaded, ~12k codes for India GST) ──────────────────
-// Preloaded via SQL seed. Owners can also add their own.
 model HsnCode {
   id          String   @id @default(cuid())
-  code        String   @unique              // e.g. "8708" or "87082900"
+  code        String   @unique
   description String   @default("")
-  rate        Float    @default(0)          // Default GST % for this HSN
-  category    String   @default("")         // Broad category for filtering
+  rate        Float    @default(0)
+  category    String   @default("")
   createdAt   DateTime @default(now())
-
   @@index([code])
   @@index([category])
   @@index([rate])
 }
 
-// ─── Custom Fields per Category (Snipe-IT-style fieldsets) ──────────────────
-// Owner defines fields per category ("Brake Pads" → Pad Material, Vehicle Fitment).
-// Stored values live in PartMeta (one row per part + field).
 model CategoryField {
   id          String   @id @default(cuid())
   ownerId     String   @default("")
-  category    String                       // e.g. "Brakes", "Engine"
-  fieldName   String                       // e.g. "Pad Material"
-  fieldType   String   @default("text")    // 'text' | 'number' | 'select' | 'date'
-  fieldOptions String  @default("[]")      // JSON array for select type
+  category    String
+  fieldName   String
+  fieldType   String   @default("text")
+  fieldOptions String  @default("[]")
   isRequired  Boolean  @default(false)
   sortOrder   Int      @default(0)
   createdAt   DateTime @default(now())
-
   values      PartMeta[]
-
   @@unique([ownerId, category, fieldName])
   @@index([ownerId])
   @@index([category])
 }
 
-// Per-part custom field values (one row per part + field)
 model PartMeta {
   id              String   @id @default(cuid())
   ownerId         String   @default("")
@@ -643,60 +476,85 @@ model PartMeta {
   part            SparePart @relation(fields: [partId], references: [id], onDelete: Cascade)
   categoryFieldId String
   categoryField   CategoryField @relation(fields: [categoryFieldId], references: [id], onDelete: Cascade)
-  value           String   @default("")    // Stored as string; client casts based on fieldType
+  value           String   @default("")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
-
   @@unique([partId, categoryFieldId])
   @@index([ownerId])
   @@index([partId])
 }
 
-// ─── Physical Stock Count (stocktaking) ─────────────────────────────────────
-// Owner starts a count → system generates expected quantities → user enters
-// counted quantities → on "finalize", variances are posted as stock adjustments.
 model StockCount {
   id           String   @id @default(cuid())
   ownerId      String   @default("")
   shopId       String?
-  countNumber  String   @unique              // SC-YYYYMMDD-NNNNN
-  status       String   @default("draft")    // 'draft' | 'in_progress' | 'finalized' | 'cancelled'
+  countNumber  String   @unique
+  status       String   @default("draft")
   startedAt    DateTime @default(now())
   finalizedAt  DateTime?
   finalizedById String?
   notes        String   @default("")
-  // Summary stats (computed on finalize)
   totalItems   Int      @default(0)
   matchedItems Int      @default(0)
   varianceItems Int     @default(0)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
-
   items        StockCountItem[]
-
   @@index([ownerId])
   @@index([shopId])
   @@index([status])
 }
 
-// Per-item line in a stock count sheet
 model StockCountItem {
   id            String   @id @default(cuid())
   stockCountId  String
   stockCount    StockCount @relation(fields: [stockCountId], references: [id], onDelete: Cascade)
   partId        String
   part          SparePart @relation(fields: [partId], references: [id])
-  // Expected quantity (snapshot at count start)
   expectedQty   Int      @default(0)
-  // Counted quantity (entered by user; null = not yet counted)
   countedQty    Int?
-  // Variance (counted - expected); computed on finalize
   variance      Int      @default(0)
   notes         String   @default("")
   countedAt     DateTime?
   createdAt     DateTime @default(now())
-
   @@unique([stockCountId, partId])
   @@index([stockCountId])
   @@index([partId])
+}
+
+model SaleReturn {
+  id              String   @id @default(cuid())
+  ownerId         String   @default("")
+  saleId          String
+  sale            Sale     @relation(fields: [saleId], references: [id])
+  returnNumber    String   @unique
+  quantity        Int
+  refundAmount    Float     @default(0)
+  reason          String   @default("")
+  condition       String   @default("resellable")
+  restocked       Boolean  @default(true)
+  notes           String   @default("")
+  processedById   String?
+  date            DateTime @default(now())
+  createdAt       DateTime @default(now())
+  @@index([ownerId])
+  @@index([saleId])
+  @@index([date])
+}
+
+model StockReservation {
+  id          String    @id @default(cuid())
+  ownerId     String    @default("")
+  partId      String
+  part        SparePart  @relation(fields: [partId], references: [id])
+  quantity    Int
+  reservedBy  String    @default("")
+  reason      String    @default("")
+  expiresAt   DateTime
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  @@index([ownerId])
+  @@index([partId])
+  @@index([isActive])
+  @@index([expiresAt])
 }

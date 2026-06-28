@@ -24,7 +24,7 @@ import { guardAuth, logApiError } from '@/lib/api-utils'
 export async function GET(request: NextRequest) {
   try {
     const [user, authErr] = await guardAuth(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const today = new Date()
     today.setHours(0, 0, 0, 0)
@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
     const [allActiveParts, todaySalesAgg, todaySalesCount, recentActivity] =
       await Promise.all([
         db.sparePart.findMany({
-          where: { isActive: true },
+          where: { ownerId: user.ownerId, isActive: true },
           select: {
             id: true,
             name: true,
@@ -46,10 +46,10 @@ export async function GET(request: NextRequest) {
           // need keeps the payload small even for 10k+ parts.
         }),
         db.sale.aggregate({
-          where: { date: { gte: today } },
+          where: { ownerId: user.ownerId, date: { gte: today } },
           _sum: { totalPrice: true },
         }),
-        db.sale.count({ where: { date: { gte: today } } }),
+        db.sale.count({ where: { ownerId: user.ownerId, date: { gte: today } } }),
         db.activityLog.findMany({
           take: 10,
           orderBy: { createdAt: 'desc' },

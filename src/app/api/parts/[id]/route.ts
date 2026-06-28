@@ -11,11 +11,11 @@ export async function GET(
 ) {
   try {
     const [user, authErr] = await guardAuth(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const { id } = await params
-    const part = await db.sparePart.findUnique({
-      where: { id },
+    const part = await db.sparePart.findFirst({
+      where: { id, ownerId: user.ownerId },
       include: {
         sales: { orderBy: { createdAt: 'desc' }, take: 10 },
         purchases: { orderBy: { createdAt: 'desc' }, take: 10 },
@@ -36,7 +36,7 @@ export async function PUT(
 ) {
   try {
     const [user, authErr] = await guardAuth(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const { id } = await params
     const body = await request.json().catch(() => null)
@@ -53,7 +53,7 @@ export async function PUT(
     )
 
     // Verify the part exists before updating (Prisma P2025 → 404 fallback)
-    const existing = await db.sparePart.findUnique({ where: { id } })
+    const existing = await db.sparePart.findFirst({ where: { id, ownerId: user.ownerId } })
     if (!existing) return apiNotFound('Part not found')
 
     // Note: we intentionally don't pre-check partNumber uniqueness here.
@@ -62,7 +62,7 @@ export async function PUT(
     // the pre-check saves a query in the common case.
 
     const part = await db.sparePart.update({
-      where: { id },
+      where: { id, ownerId: user.ownerId },
       data: updateData,
     })
 
@@ -103,15 +103,15 @@ export async function DELETE(
 ) {
   try {
     const [user, authErr] = await guardAuth(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const { id } = await params
-    const existing = await db.sparePart.findUnique({ where: { id } })
+    const existing = await db.sparePart.findFirst({ where: { id, ownerId: user.ownerId } })
     if (!existing) return apiNotFound('Part not found')
 
     // Soft-delete by deactivating, so historical sales/purchases keep their FK
     await db.sparePart.update({
-      where: { id },
+      where: { id, ownerId: user.ownerId },
       data: { isActive: false },
     })
 

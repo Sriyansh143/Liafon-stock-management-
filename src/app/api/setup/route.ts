@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
     let sessionUser: SessionUser | null = null
     if (!isFirstRun) {
       const [user, authErr] = await guardOwner(request)
-      if (authErr) return authErr
+      if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
       sessionUser = user
     }
 

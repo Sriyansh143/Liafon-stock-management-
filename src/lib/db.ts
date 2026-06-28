@@ -56,7 +56,7 @@ function normalizeDatabaseUrl(url: string | undefined): string | undefined {
 const resolvedDatabaseUrl = normalizeDatabaseUrl(process.env.DATABASE_URL)
 
 if (process.env.DATABASE_URL && resolvedDatabaseUrl !== process.env.DATABASE_URL) {
-  console.log(
+  if (process.env.NODE_ENV !== 'production') console.log(
     '[db] Auto-patched DATABASE_URL: appended pgbouncer=true / connection_limit=1 / prepare=false. ' +
       'Set these explicitly in your Vercel env vars to silence this.'
   )

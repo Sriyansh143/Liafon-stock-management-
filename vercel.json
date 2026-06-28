@@ -8,21 +8,7 @@
   "functions": {
     "src/app/api/**/route.ts": {
       "maxDuration": 60
-    },
-    "src/app/api/reports/pdf/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/cron/backup/route.ts": {
-      "maxDuration": 60
-    },
-    "src/app/api/backup/route.ts": {
-      "maxDuration": 60
     }
   },
-  "crons": [
-    {
-      "path": "/api/cron/backup",
-      "schedule": "0 23 * * *"
-    }
-  ]
+  "crons": []
 }

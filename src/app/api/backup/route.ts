@@ -8,13 +8,6 @@ import { validate, backupSchema, scheduledBackupSchema, restoreSchema } from '@/
 import { logUserActivity } from '@/lib/activity'
 import type { SessionUser } from '@/lib/auth'
 import type { Prisma } from '@prisma/client'
-import {
-  isSupabaseStorageConfigured,
-  listRemoteBackups,
-  uploadBackupPair,
-  getSignedDownloadUrl,
-  deleteRemoteBackup,
-} from '@/lib/supabase-storage'
 
 // ─── Vercel-aware backup directory ────────────────────────────────────────
 // Vercel's filesystem is READ-ONLY except for /tmp (and /tmp is wiped
@@ -51,7 +44,7 @@ function getTimestamp(): string {
 export async function GET(request: NextRequest) {
   try {
     const [user, authErr] = await guardAdmin(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const BACKUP_DIR = await ensureBackupDir()
 
@@ -64,39 +57,27 @@ export async function GET(request: NextRequest) {
     const todayBackupTime = new Date(now)
     todayBackupTime.setHours(backupHour, 0, 0, 0)
 
-    // ─── Merge local (/tmp) + remote (Supabase Storage) backups ─────────
-    // On Vercel, /tmp is wiped on cold starts — the persistent source of
-    // truth is Supabase Storage. We list both and dedupe by filename.
-    const [localFiles, remoteBackups] = await Promise.all([
-      fs.readdir(BACKUP_DIR).catch(() => [] as string[]),
-      isSupabaseStorageConfigured() ? listRemoteBackups() : Promise.resolve([]),
-    ])
-
+    const files = await fs.readdir(BACKUP_DIR)
     const todayStr = now.toISOString().slice(0, 10)
-    const hasTodayBackup =
-      localFiles.some((f) => f.includes(todayStr)) ||
-      remoteBackups.some((b) => b.name.includes(todayStr))
+
+    // Detect a missed backup (no backup created today after the
+    // scheduled hour). Previously this GET endpoint auto-fired a
+    // full backup as a side effect, which violated REST semantics
+    // (GET should be idempotent) and could create GBs of backup data
+    // every time an admin opened the Settings page. Now we just
+    // report the missed-backup flag — the client can POST to
+    // explicitly trigger the backup.
+    const hasTodayBackup = files.some((f) => f.includes(todayStr))
     const needsBackup = !hasTodayBackup && now > todayBackupTime
 
     interface BackupMeta {
       filename: string
       size: number
       created: string
-      /** 'local' (in /tmp) or 'remote' (in Supabase Storage). */
-      location: 'local' | 'remote'
-      /** Path within the Supabase bucket (only for remote backups). */
-      remotePath?: string
-      /** Pre-signed download URL (only for remote backups, may be null). */
-      downloadUrl?: string | null
     }
     const backups: BackupMeta[] = []
-    const seen = new Set<string>()
 
-    // Local files first
-    for (const file of localFiles) {
-      if (file === '.gitkeep') continue
-      if (seen.has(file)) continue
-      seen.add(file)
+    for (const file of files) {
       const filePath = path.join(BACKUP_DIR, file)
       try {
         const stat = await fs.stat(filePath)
@@ -104,77 +85,19 @@ export async function GET(request: NextRequest) {
           filename: file,
           size: stat.size,
           created: stat.birthtime.toISOString(),
-          location: 'local',
         })
       } catch {
         // skip files we can't stat
       }
     }
 
-    // Remote files (Supabase Storage) — persistent on Vercel
-    for (const remote of remoteBackups) {
-      if (seen.has(remote.name)) continue
-      seen.add(remote.name)
-      backups.push({
-        filename: remote.name,
-        size: remote.size,
-        created: remote.lastModified,
-        location: 'remote',
-        remotePath: remote.path,
-        // Don't auto-generate signed URLs for ALL backups in the list —
-        // that would be N round-trips. The client fetches a signed URL
-        // on-demand via the `?download=<filename>` query param.
-        downloadUrl: null,
-      })
-    }
-
     backups.sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime())
-
-    // ─── On-demand download: ?download=<filename> ───────────────────────
-    // Generates a signed URL for a remote backup and redirects.
-    // For local backups (self-hosted), returns the file directly.
-    const downloadFilename = request.nextUrl.searchParams.get('download')
-    if (downloadFilename) {
-      const safe = path.basename(downloadFilename)
-      if (safe !== downloadFilename) return apiBadRequest('Invalid filename')
-
-      // Try remote first (persistent on Vercel)
-      if (isSupabaseStorageConfigured()) {
-        const remotePath = `backups/${safe}`
-        const signedUrl = await getSignedDownloadUrl(remotePath)
-        if (signedUrl) {
-          return NextResponse.redirect(signedUrl, { status: 302 })
-        }
-      }
-
-      // Fall back to local file (self-hosted, or Vercel /tmp before cold start)
-      const localPath = path.join(BACKUP_DIR, safe)
-      try {
-        await fs.access(localPath)
-        const buffer = await fs.readFile(localPath)
-        return new NextResponse(new Uint8Array(buffer), {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/octet-stream',
-            'Content-Disposition': `attachment; filename="${safe}"`,
-          },
-        })
-      } catch {
-        return apiNotFound('Backup file not found')
-      }
-    }
 
     return NextResponse.json({
       success: true,
       backups,
       backupDir: BACKUP_DIR,
       missedBackupDetected: needsBackup,
-      supabaseStorageEnabled: isSupabaseStorageConfigured(),
-      // Warn the operator if they're running without persistent storage on Vercel
-      persistenceWarning:
-        process.env.VERCEL === '1' && !isSupabaseStorageConfigured()
-          ? 'Backups are stored in /tmp only — they will vanish on the next cold start. Set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and SUPABASE_BUCKET_NAME to enable persistent backups.'
-          : null,
     })
   } catch (error) {
     logApiError('backup/GET', error)
@@ -186,7 +109,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const [user, authErr] = await guardAdmin(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const body = await request.json().catch(() => null)
     if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
@@ -354,22 +277,6 @@ async function handleBackupInternal(type: string, user?: SessionUser | null) {
 
   const jsonStat = await fs.stat(jsonPath)
 
-  // ─── Upload to Supabase Storage for persistence on Vercel ────────────────
-  // On Vercel, /tmp is wiped on cold starts. We upload the JSON (and Excel,
-  // if any) to Supabase Storage so backups persist across invocations.
-  // This is a no-op if Supabase Storage isn't configured (falls back to
-  // /tmp-only mode with a warning returned in the API response).
-  let storageUploadResult: { json?: { path: string; url: string | null }; excel?: { path: string; url: string | null } | null } | null = null
-  if (isSupabaseStorageConfigured()) {
-    try {
-      storageUploadResult = await uploadBackupPair(jsonPath, excelFilename ? path.join(BACKUP_DIR, excelFilename) : null)
-    } catch (uploadErr) {
-      // Don't fail the whole backup if upload fails — the local /tmp copy
-      // still exists (briefly). Log + return the error in the response.
-      console.error('[backup] Supabase Storage upload failed:', uploadErr)
-    }
-  }
-
   // Update last_backup timestamp in settings
   try {
     const ownerId = user?.ownerId || 'system'
@@ -398,10 +305,6 @@ async function handleBackupInternal(type: string, user?: SessionUser | null) {
     recordCounts: Object.fromEntries(
       Object.entries(data).map(([key, val]) => [key, val.length])
     ),
-    storageUploaded: storageUploadResult !== null,
-    storageUrls: storageUploadResult
-      ? { json: storageUploadResult.json?.url ?? null, excel: storageUploadResult.excel?.url ?? null }
-      : null,
   }
 }
 
@@ -762,7 +665,7 @@ export type _PrismaTypes = Prisma.SparePartWhereInput
 export async function DELETE(request: NextRequest) {
   try {
     const [user, authErr] = await guardAdmin(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const { searchParams } = new URL(request.url)
     const filename = searchParams.get('filename')
@@ -786,42 +689,20 @@ export async function DELETE(request: NextRequest) {
     const BACKUP_DIR = await ensureBackupDir()
     const filePath = path.join(BACKUP_DIR, safeFilename)
 
-    // Track whether we successfully deleted from any location.
-    // On Vercel, the local /tmp file may already be gone (cold start),
-    // but the remote (Supabase Storage) copy persists — delete from there.
-    let deletedFromLocal = false
-    let deletedFromRemote = false
-
-    // Try local first (self-hosted, or Vercel /tmp before cold start)
     try {
       await fs.access(filePath)
-      await fs.unlink(filePath)
-      deletedFromLocal = true
-
-      // Also delete the companion Excel file if it exists (full + inventory
-      // backups produce both a .json and a .xlsx with the same timestamp).
-      if (isJsonBackup) {
-        const excelName = safeFilename.replace(/^backup_/, 'export_').replace(/\.json$/, '.xlsx')
-        const excelPath = path.join(BACKUP_DIR, excelName)
-        await fs.unlink(excelPath).catch(() => {})
-      }
     } catch {
-      // Local file doesn't exist — that's fine on Vercel cold starts
-    }
-
-    // Try remote (Supabase Storage) — persistent on Vercel
-    if (isSupabaseStorageConfigured()) {
-      const remotePath = `backups/${safeFilename}`
-      deletedFromRemote = await deleteRemoteBackup(remotePath)
-      // Also delete companion Excel from remote
-      if (isJsonBackup) {
-        const excelRemoteName = safeFilename.replace(/^backup_/, 'export_').replace(/\.json$/, '.xlsx')
-        await deleteRemoteBackup(`backups/${excelRemoteName}`)
-      }
-    }
-
-    if (!deletedFromLocal && !deletedFromRemote) {
       return apiNotFound('Backup file not found')
+    }
+
+    await fs.unlink(filePath)
+
+    // Also delete the companion Excel file if it exists (full + inventory
+    // backups produce both a .json and a .xlsx with the same timestamp).
+    if (isJsonBackup) {
+      const excelName = safeFilename.replace(/^backup_/, 'export_').replace(/\.json$/, '.xlsx')
+      const excelPath = path.join(BACKUP_DIR, excelName)
+      await fs.unlink(excelPath).catch(() => {})
     }
 
     await logUserActivity(user, {
@@ -829,15 +710,10 @@ export async function DELETE(request: NextRequest) {
       entityType: 'backup',
       entityId: safeFilename,
       summary: `Backup deleted: ${safeFilename}`,
-      metadata: { filename: safeFilename, deletedFromLocal, deletedFromRemote },
+      metadata: { filename: safeFilename },
     })
 
-    return NextResponse.json({
-      success: true,
-      filename: safeFilename,
-      deletedFromLocal,
-      deletedFromRemote,
-    })
+    return NextResponse.json({ success: true, filename: safeFilename })
   } catch (error) {
     logApiError('backup/DELETE', error)
     return NextResponse.json({ error: 'Failed to delete backup' }, { status: 500 })

@@ -18,18 +18,6 @@ export async function GET(request: NextRequest) {
     const page = Math.max(1, parseInt(searchParams.get('page') || '1') || 1)
     const limit = Math.min(200, Math.max(1, parseInt(searchParams.get('limit') || '50') || 50))
 
-    // ─── Cursor-based pagination (added for Vercel + scale) ──────────────
-    // The legacy `?page=N&limit=M` query uses OFFSET under the hood, which
-    // is O(N) on Postgres — bad for 50k+ parts. The new `?cursor=...` mode
-    // uses `cursor: { id }` + `take: limit+1` (Prisma idiom) which is O(1).
-    //
-    // The client passes `?cursor=<lastPartId>` to fetch the next page.
-    // We return `nextCursor` in the response — null when there are no more
-    // pages. The `hasMore` flag is a convenience for UIs.
-    //
-    // Both modes coexist for backward compat — `?page=N` still works.
-    const cursor = searchParams.get('cursor') || ''
-
     const where: Prisma.SparePartWhereInput = {}
     if (!includeInactive) where.isActive = true
     if (search) {
@@ -42,29 +30,6 @@ export async function GET(request: NextRequest) {
     }
     if (category && category !== 'all') {
       where.category = category
-    }
-
-    // ─── Cursor-based fast path (preferred for large tables) ─────────────
-    if (cursor && !lowStock) {
-      const parts = await db.sparePart.findMany({
-        where,
-        orderBy: { id: 'asc' },
-        take: limit + 1,
-        cursor: { id: cursor },
-        skip: 1,   // Skip the cursor row itself
-      })
-      const hasMore = parts.length > limit
-      const sliced = hasMore ? parts.slice(0, limit) : parts
-      const nextCursor = hasMore ? sliced[sliced.length - 1].id : null
-      const total = await db.sparePart.count({ where })
-      return NextResponse.json({
-        parts: sliced,
-        total,
-        limit,
-        cursor,
-        nextCursor,
-        hasMore,
-      })
     }
 
     // SQLite can't compare two columns directly in a WHERE clause.
@@ -83,7 +48,7 @@ export async function GET(request: NextRequest) {
       )
       const total = filtered.length
       const parts = filtered.slice((page - 1) * limit, page * limit)
-      return NextResponse.json({ parts, total, page, limit, hasMore: (page - 1) * limit + parts.length < total })
+      return NextResponse.json({ parts, total, page, limit })
     }
 
     const [parts, total] = await Promise.all([
@@ -96,7 +61,7 @@ export async function GET(request: NextRequest) {
       db.sparePart.count({ where }),
     ])
 
-    return NextResponse.json({ parts, total, page, limit, hasMore: (page - 1) * limit + parts.length < total })
+    return NextResponse.json({ parts, total, page, limit })
   } catch (error) {
     logApiError('parts/GET', error)
     return NextResponse.json({ error: 'Failed to fetch parts' }, { status: 500 })

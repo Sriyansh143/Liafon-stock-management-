@@ -71,7 +71,6 @@ import { printInvoice, buildCSV, downloadCSV } from '@/lib/print';
 
 import { useAppStore } from '@/store/app-store'
 import { formatCurrency, getCurrencySymbol } from '@/lib/currency'
-import { UpiPaymentModal } from '@/components/phase4/upi-payment-modal'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -94,8 +93,6 @@ interface SaleWithPart {
   quantity: number;
   unitPrice: number;
   totalPrice: number;
-  amountPaid?: number;        // Phase 3 — payment tracking
-  paymentStatus?: string;     // 'paid' | 'partial' | 'unpaid'
   customerName: string;
   customerPhone: string;
   notes: string;
@@ -617,53 +614,6 @@ function PrintInvoiceButton({
         <p>Print / Save as PDF</p>
       </TooltipContent>
     </Tooltip>
-  );
-}
-
-// ─── UPI Payment Button (Phase 4) ───────────────────────────────────────────
-
-function UpiPaymentButton({
-  sale,
-  currency,
-}: {
-  sale: SaleWithPart;
-  currency: string;
-}) {
-  const [open, setOpen] = useState(false);
-  // Show only for sales that aren't fully paid (or always — owner's choice).
-  // We show it always so the owner can also re-print a UPI QR for record-keeping.
-  const amountDue = sale.totalPrice - (sale.amountPaid || sale.totalPrice);
-  const buttonLabel = amountDue > 0 ? 'UPI' : 'UPI';
-
-  return (
-    <>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5 h-8 text-xs"
-            onClick={() => setOpen(true)}
-          >
-            <span className="font-semibold text-indigo-600">{buttonLabel}</span>
-            {amountDue > 0 && (
-              <Badge className="bg-orange-100 text-orange-700 text-[10px] px-1 py-0">
-                ₹{amountDue.toFixed(0)}
-              </Badge>
-            )}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Accept UPI Payment</TooltipContent>
-      </Tooltip>
-      <UpiPaymentModal
-        open={open}
-        onClose={() => setOpen(false)}
-        saleId={sale.id}
-        amount={amountDue > 0 ? amountDue : sale.totalPrice}
-        payeeVpa={process.env.NEXT_PUBLIC_SHOP_UPI_VPA || ''}
-        payeeName={process.env.NEXT_PUBLIC_SHOP_NAME || 'Shop'}
-      />
-    </>
   );
 }
 
@@ -1380,10 +1330,6 @@ export default function SalesPage() {
                                   <WhatsAppShareButton
                                     sale={sale}
                                     departments={departments}
-                                    currency={currency}
-                                  />
-                                  <UpiPaymentButton
-                                    sale={sale}
                                     currency={currency}
                                   />
                                   <PrintInvoiceButton

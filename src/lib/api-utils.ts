@@ -3,27 +3,34 @@ import type { NextRequest } from 'next/server'
 import { requireAuth, requireRole, type SessionUser } from '@/lib/auth'
 
 // ─── Standard API Error Helpers ─────────────────────────────────────────────
-// Concise arrow-function factories — each returns a NextResponse with the
-// appropriate status + JSON body. Intentionally tiny: a one-liner is more
-// readable than a 3-line function for these.
 
-export const apiError = (message: string, status = 500, details?: unknown): NextResponse =>
-  NextResponse.json({ error: message, details }, { status })
+export function apiError(
+  message: string,
+  status: number = 500,
+  details?: unknown
+): NextResponse {
+  return NextResponse.json({ error: message, details }, { status })
+}
 
-export const apiUnauthorized = (message = 'Authentication required'): NextResponse =>
-  NextResponse.json({ error: message }, { status: 401 })
+export function apiUnauthorized(message = 'Authentication required'): NextResponse {
+  return NextResponse.json({ error: message }, { status: 401 })
+}
 
-export const apiForbidden = (message = 'You do not have permission'): NextResponse =>
-  NextResponse.json({ error: message }, { status: 403 })
+export function apiForbidden(message = 'You do not have permission'): NextResponse {
+  return NextResponse.json({ error: message }, { status: 403 })
+}
 
-export const apiBadRequest = (message = 'Bad request', details?: unknown): NextResponse =>
-  NextResponse.json({ error: message, details }, { status: 400 })
+export function apiBadRequest(message = 'Bad request', details?: unknown): NextResponse {
+  return NextResponse.json({ error: message, details }, { status: 400 })
+}
 
-export const apiNotFound = (message = 'Resource not found'): NextResponse =>
-  NextResponse.json({ error: message }, { status: 404 })
+export function apiNotFound(message = 'Resource not found'): NextResponse {
+  return NextResponse.json({ error: message }, { status: 404 })
+}
 
-export const apiConflict = (message = 'Resource conflict'): NextResponse =>
-  NextResponse.json({ error: message }, { status: 409 })
+export function apiConflict(message = 'Resource conflict'): NextResponse {
+  return NextResponse.json({ error: message }, { status: 409 })
+}
 
 // ─── Auth Guard Helpers ─────────────────────────────────────────────────────
 //
@@ -35,61 +42,48 @@ export const apiConflict = (message = 'Resource conflict'): NextResponse =>
 //   if (err) return err
 //   // user is now SessionUser
 
-/** Tuple type for guard return values — DRY alias used by all guards. */
-export type GuardResult = [SessionUser | null, NextResponse | null]
+export async function guardAuth(
+  request?: NextRequest
+): Promise<[SessionUser | null, NextResponse | null]> {
+  const auth = await requireAuth(request)
+  if (!auth.authorized || !auth.user) {
+    return [null, apiUnauthorized(auth.error)]
+  }
+  return [auth.user, null]
+}
 
-/**
- * Build the standard guard response tuple from an AuthResult.
- * Extracted as a helper so all role guards share the same shape logic.
- */
-function createGuardResponse(
-  auth: { authorized: boolean; user?: SessionUser; error?: string; status?: number }
-): GuardResult {
+export async function guardOwner(
+  request?: NextRequest
+): Promise<[SessionUser | null, NextResponse | null]> {
+  const auth = await requireRole(['owner'], request)
   if (!auth.authorized || !auth.user) {
     return [null, auth.status === 403 ? apiForbidden(auth.error) : apiUnauthorized(auth.error)]
   }
   return [auth.user, null]
 }
 
-/** Require any authenticated user. */
-export const guardAuth = async (request?: NextRequest): Promise<GuardResult> =>
-  createGuardResponse(await requireAuth(request))
+export async function guardAdmin(
+  request?: NextRequest
+): Promise<[SessionUser | null, NextResponse | null]> {
+  const auth = await requireRole(['owner', 'admin'], request)
+  if (!auth.authorized || !auth.user) {
+    return [null, auth.status === 403 ? apiForbidden(auth.error) : apiUnauthorized(auth.error)]
+  }
+  return [auth.user, null]
+}
 
-/** Require the owner role. */
-export const guardOwner = async (request?: NextRequest): Promise<GuardResult> =>
-  createGuardResponse(await requireRole(['owner'], request))
-
-/** Require admin or owner. */
-export const guardAdmin = async (request?: NextRequest): Promise<GuardResult> =>
-  createGuardResponse(await requireRole(['owner', 'admin'], request))
-
-/** Require manager, admin, or owner. */
-export const guardManager = async (request?: NextRequest): Promise<GuardResult> =>
-  createGuardResponse(await requireRole(['owner', 'admin', 'manager'], request))
+export async function guardManager(
+  request?: NextRequest
+): Promise<[SessionUser | null, NextResponse | null]> {
+  const auth = await requireRole(['owner', 'admin', 'manager'], request)
+  if (!auth.authorized || !auth.user) {
+    return [null, auth.status === 403 ? apiForbidden(auth.error) : apiUnauthorized(auth.error)]
+  }
+  return [auth.user, null]
+}
 
 // ─── Retry Wrapper for DB Operations ────────────────────────────────────────
 
-/**
- * Interface for errors that can be inspected for a Prisma `code` field.
- * Used by `withRetry` to decide whether an error is retryable.
- */
-interface RetryableError {
-  code?: string
-}
-
-/** Returns true if the error is a transient DB connection / transaction conflict. */
-function isRetryableError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false
-  const code = (error as RetryableError).code
-  // P2034 = transaction conflict (write conflict in a concurrent tx)
-  // P1001 = can't reach database server (transient network blip)
-  return code === 'P2034' || code === 'P1001'
-}
-
-/**
- * Retry an async operation on transient DB errors (Prisma P2034 / P1001).
- * Uses exponential backoff with jitter to avoid thundering herd.
- */
 export async function withRetry<T>(
   operation: () => Promise<T>,
   retries = 3,
@@ -101,8 +95,15 @@ export async function withRetry<T>(
       return await operation()
     } catch (error) {
       lastError = error
-      if (!isRetryableError(error)) throw error
-      // Exponential backoff: 100ms, 200ms, 400ms + up to 50ms random jitter
+      if (error && typeof error === 'object' && 'code' in error) {
+        const code = (error as { code: string }).code
+        // Only retry on connection / transaction conflict errors
+        if (code !== 'P2034' && code !== 'P1001') {
+          throw error
+        }
+      } else {
+        throw error
+      }
       const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 50
       await new Promise((r) => setTimeout(r, delay))
     }
@@ -122,8 +123,10 @@ export interface LogApiErrorContext {
 }
 
 /**
- * Log an API error with route name, request method/URL, user ID, and stack.
- * Single-line format for easy log aggregation (Datadog, Vercel logs, etc.).
+ * Log an API error with route name, request method/URL, user ID, and
+ * stack trace. Previously this only logged the route + error, which
+ * made it hard to debug production issues (no URL, no method, no user
+ * correlation).
  */
 export function logApiError(
   route: string,
@@ -134,6 +137,7 @@ export function logApiError(
   const message = error instanceof Error ? error.message : String(error)
   const stack = error instanceof Error ? error.stack : undefined
 
+  // Extract request info if a NextRequest was passed
   let method: string | undefined
   let url: string | undefined
   let userId: string | undefined
@@ -141,6 +145,7 @@ export function logApiError(
   let extra: Record<string, unknown> | undefined
 
   if (context) {
+    // Backwards-compat: callers can pass a plain object as the 3rd arg
     if ('request' in context && context.request) {
       const req = (context as LogApiErrorContext).request
       if (req) {

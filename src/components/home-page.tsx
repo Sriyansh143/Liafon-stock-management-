@@ -19,8 +19,16 @@ import {
   Command as CommandIcon,
   Activity as ActivityIcon,
   AlertTriangle,
-  RefreshCw,
   TrendingUp,
+  Search,
+  RefreshCw,
+  ClipboardList,
+  ArrowLeftRight,
+  ClipboardCheck,
+  Store,
+  FileBarChart,
+  Boxes,
+  ShieldCheck,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAppStore, AppPage } from '@/store/app-store'
@@ -73,19 +81,19 @@ import { ShopsManager } from '@/components/phase4/shops-manager'
 import { PurchaseOrdersPage } from '@/components/phase4/purchase-orders-page'
 import { StockTransfersPage } from '@/components/phase4/stock-transfers-page'
 import { StockCountPage } from '@/components/phase4/stock-count-page'
-import { TaxRatesSection, TwoFactorSection, WhatsAppSection } from '@/components/phase4/settings-sections'
+import { QuickStockAdjust } from '@/components/phase4/quick-stock-adjust'
 
 const allNavItems: { id: AppPage; label: string; icon: React.ElementType; description: string; roles: string[] }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, description: 'Overview & analytics', roles: ['owner', 'admin', 'manager', 'user'] },
-  { id: 'inventory', label: 'Inventory', icon: Package, description: 'Manage spare parts', roles: ['owner', 'admin', 'manager', 'user'] },
+  { id: 'inventory', label: 'Inventory', icon: Package, description: 'Manage products & stock', roles: ['owner', 'admin', 'manager', 'user'] },
   { id: 'sales', label: 'Sales', icon: ShoppingCart, description: 'Record & track sales', roles: ['owner', 'admin', 'manager', 'user'] },
   { id: 'purchases', label: 'Purchases', icon: PackageOpen, description: 'Purchase ledger', roles: ['owner', 'admin', 'manager'] },
-  { id: 'purchase-orders', label: 'Purchase Orders', icon: PackageOpen, description: 'PO workflow (draft→approve→receive)', roles: ['owner', 'admin', 'manager'] },
-  { id: 'stock-transfers', label: 'Stock Transfers', icon: PackageOpen, description: 'Move stock between shops', roles: ['owner', 'admin', 'manager'] },
-  { id: 'stock-count', label: 'Stock Count', icon: PackageOpen, description: 'Physical stocktaking', roles: ['owner', 'admin', 'manager'] },
-  { id: 'shops', label: 'Shops', icon: Building2, description: 'Manage branches', roles: ['owner', 'admin'] },
+  { id: 'purchase-orders', label: 'Purchase Orders', icon: ClipboardList, description: 'PO workflow (draft→approve→receive)', roles: ['owner', 'admin', 'manager'] },
+  { id: 'stock-transfers', label: 'Stock Transfers', icon: ArrowLeftRight, description: 'Move stock between shops', roles: ['owner', 'admin', 'manager'] },
+  { id: 'stock-count', label: 'Stock Count', icon: ClipboardCheck, description: 'Physical stocktaking', roles: ['owner', 'admin', 'manager'] },
+  { id: 'shops', label: 'Shops', icon: Store, description: 'Manage branches', roles: ['owner', 'admin'] },
   { id: 'departments', label: 'Departments', icon: Building2, description: 'WhatsApp contacts', roles: ['owner', 'admin', 'manager'] },
-  { id: 'reports', label: 'Reports', icon: BarChart3, description: 'Analytics & insights', roles: ['owner', 'admin', 'manager'] },
+  { id: 'reports', label: 'Reports', icon: FileBarChart, description: 'Analytics & insights', roles: ['owner', 'admin', 'manager'] },
   { id: 'analysis', label: 'Analysis', icon: TrendingUp, description: 'Restock recommendations & dead stock', roles: ['owner', 'admin', 'manager'] },
   { id: 'activity', label: 'Activity Log', icon: ActivityIcon, description: 'Audit trail of all actions', roles: ['owner'] },
   { id: 'settings', label: 'Settings', icon: Settings, description: 'Backup, import & config', roles: ['owner', 'admin'] },
@@ -117,10 +125,30 @@ function fetchWithTimeout(url: string, ms: number = 10000): Promise<Response> {
   return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timeout))
 }
 
+// ─── Nav item groups (InvenTree/ERPNext-inspired) ───────────────────────────
+const NAV_GROUPS: { label: string; items: typeof allNavItems }[] = [
+  {
+    label: 'Overview',
+    items: allNavItems.filter(i => ['dashboard', 'analysis', 'reports'].includes(i.id)),
+  },
+  {
+    label: 'Inventory',
+    items: allNavItems.filter(i => ['inventory', 'stock-count', 'stock-transfers'].includes(i.id)),
+  },
+  {
+    label: 'Sales & Purchases',
+    items: allNavItems.filter(i => ['sales', 'purchases', 'purchase-orders'].includes(i.id)),
+  },
+  {
+    label: 'Administration',
+    items: allNavItems.filter(i => ['shops', 'departments', 'users', 'activity', 'settings'].includes(i.id)),
+  },
+]
+
 function SidebarContent({ onClose }: { onClose?: () => void }) {
   const { activePage, setActivePage, setSidebarOpen, hasAccess } = useAppStore()
   const [lowStockCount, setLowStockCount] = useState<number | null>(null)
-  const navItems = allNavItems.filter((item) => hasAccess(item.id))
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     let cancelled = false
@@ -132,16 +160,11 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
         if (!cancelled && typeof data.lowStockParts === 'number') {
           setLowStockCount(data.lowStockParts)
         }
-      } catch {
-        // ignore — non-critical
-      }
+      } catch { /* ignore */ }
     }
     fetchLowStock()
     const interval = setInterval(fetchLowStock, 60_000)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
+    return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
   const handleNavClick = (page: AppPage) => {
@@ -150,70 +173,86 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
     if (window.innerWidth < 1024) setSidebarOpen(false)
   }
 
+  const toggleGroup = (label: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(label)) next.delete(label)
+      else next.add(label)
+      return next
+    })
+  }
+
   return (
     <div className="flex flex-col h-full bg-sidebar text-sidebar-foreground">
-      {/* Brand header — minimal, no gradient */}
+      {/* Brand header */}
       <div className="px-4 py-4 border-b border-sidebar-border">
         <div className="flex items-center gap-2.5">
           <div className="flex items-center justify-center w-8 h-8 rounded-md bg-primary text-primary-foreground shrink-0">
             <PackageIcon className="w-4 h-4" />
           </div>
           <div className="min-w-0">
-            <h1 className="text-sm font-semibold tracking-tight text-foreground truncate">
-              Liafon
-            </h1>
-            <p className="text-[10px] text-muted-foreground truncate uppercase tracking-wider">
-              Stock Management
-            </p>
+            <h1 className="text-sm font-semibold tracking-tight text-foreground truncate">Liafon</h1>
+            <p className="text-[10px] text-muted-foreground truncate uppercase tracking-wider">Stock Management</p>
           </div>
         </div>
       </div>
 
-      {/* Nav — refined: subtle active state with indigo accent + left border */}
+      {/* Nav — grouped + collapsible (InvenTree/ERPNext-style) */}
       <ScrollArea className="flex-1 px-2 py-3">
-        <nav className="space-y-0.5" aria-label="Main navigation">
-          {navItems.map((item) => {
-            const isActive = activePage === item.id
-            const Icon = item.icon
+        <nav className="space-y-3" aria-label="Main navigation">
+          {NAV_GROUPS.map((group) => {
+            const visibleItems = group.items.filter(item => hasAccess(item.id))
+            if (visibleItems.length === 0) return null
+            const isCollapsed = collapsedGroups.has(group.label)
             return (
-              <Tooltip key={item.id} delayDuration={300}>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={() => handleNavClick(item.id)}
-                    aria-current={isActive ? 'page' : undefined}
-                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors group relative ${
-                      isActive
-                        ? 'bg-primary/10 text-primary font-medium'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/60 font-normal'
-                    }`}
-                  >
-                    {/* Left accent bar for active */}
-                    {isActive && (
-                      <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-r bg-primary" />
-                    )}
-                    <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'}`} />
-                    <span className="flex-1 text-left truncate">{item.label}</span>
-                    {item.id === 'inventory' && lowStockCount !== null && lowStockCount > 0 && (
-                      <Badge className={`text-[10px] px-1.5 py-0 h-4 min-w-4 flex items-center justify-center font-medium ${
-                        isActive
-                          ? 'bg-primary/15 text-primary'
-                          : 'bg-destructive/10 text-destructive'
-                      }`}>
-                        {lowStockCount}
-                      </Badge>
-                    )}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="right">
-                  <p>{item.description}</p>
-                </TooltipContent>
-              </Tooltip>
+              <div key={group.label}>
+                <button
+                  onClick={() => toggleGroup(group.label)}
+                  className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 hover:text-muted-foreground transition-colors"
+                >
+                  <ChevronDown className={`w-3 h-3 transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
+                  {group.label}
+                </button>
+                {!isCollapsed && (
+                  <div className="space-y-0.5 mt-0.5">
+                    {visibleItems.map((item) => {
+                      const isActive = activePage === item.id
+                      const Icon = item.icon
+                      return (
+                        <Tooltip key={item.id} delayDuration={300}>
+                          <TooltipTrigger asChild>
+                            <button
+                              onClick={() => handleNavClick(item.id)}
+                              aria-current={isActive ? 'page' : undefined}
+                              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors group relative ${
+                                isActive
+                                  ? 'bg-primary/10 text-primary font-medium'
+                                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/60 font-normal'
+                              }`}
+                            >
+                              {isActive && <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-r bg-primary" />}
+                              <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'}`} />
+                              <span className="flex-1 text-left truncate">{item.label}</span>
+                              {item.id === 'inventory' && lowStockCount !== null && lowStockCount > 0 && (
+                                <Badge className={`text-[10px] px-1.5 py-0 h-4 min-w-4 flex items-center justify-center font-medium ${isActive ? 'bg-primary/15 text-primary' : 'bg-destructive/10 text-destructive'}`}>
+                                  {lowStockCount}
+                                </Badge>
+                              )}
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent side="right"><p>{item.description}</p></TooltipContent>
+                        </Tooltip>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             )
           })}
         </nav>
       </ScrollArea>
 
-      {/* Footer — command palette hint + system status (compact) */}
+      {/* Footer */}
       <div className="border-t border-sidebar-border p-2 space-y-1">
         <button
           onClick={() => window.dispatchEvent(new CustomEvent('liafon:command-palette:open'))}
@@ -570,6 +609,22 @@ export default function HomePage() {
     }
   }, [currentUser, activePage, hasAccess, setActivePage])
 
+  // "/" keyboard shortcut for quick search (ERPNext awesomebar-style)
+  useEffect(() => {
+    if (!currentUser) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === '/' && !e.metaKey && !e.ctrlKey) {
+        const target = e.target as HTMLElement
+        // Don't trigger when typing in an input/textarea
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
+        e.preventDefault()
+        window.dispatchEvent(new CustomEvent('liafon:command-palette:open'))
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [currentUser])
+
   const renderPage = () => {
     switch (activePage) {
       case 'dashboard':
@@ -755,12 +810,22 @@ export default function HomePage() {
               </div>
             </div>
             <div className="flex items-center gap-1">
+              {/* Quick search bar (ERPNext awesomebar-style) */}
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('liafon:command-palette:open'))}
+                className="hidden md:flex items-center gap-2 h-8 px-3 rounded-md bg-muted/60 hover:bg-muted text-xs text-muted-foreground transition-colors min-w-[200px]"
+              >
+                <Search className="w-3.5 h-3.5" />
+                <span className="flex-1 text-left">Search…</span>
+                <kbd className="text-[10px] font-mono text-muted-foreground/60">/</kbd>
+              </button>
+
               <Tooltip delayDuration={300}>
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-8 w-8 hidden sm:flex"
+                    className="h-8 w-8 sm:hidden"
                     onClick={() =>
                       window.dispatchEvent(
                         new CustomEvent('liafon:command-palette:open')
@@ -861,10 +926,10 @@ export default function HomePage() {
             <AnimatePresence mode="wait">
               <motion.div
                 key={activePage}
-                initial={{ opacity: 0, y: 4 }}
+                initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -4 }}
-                transition={{ duration: 0.15, ease: 'easeOut' }}
+                transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
               >
                 {renderPage()}
               </motion.div>
@@ -874,6 +939,7 @@ export default function HomePage() {
       </main>
 
       <CommandPalette />
+      <QuickStockAdjust />
     </div>
   )
 }

@@ -19,9 +19,9 @@ const PUBLIC_USER_FIELDS = {
 export async function GET(request: NextRequest) {
   try {
     const [user, authErr] = await guardOwner(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
-    const users = await db.user.findMany({
+    const users = await db.user.findMany({ where: { ownerId: user.ownerId },
       select: PUBLIC_USER_FIELDS,
       orderBy: { createdAt: 'asc' },
     })
@@ -191,7 +191,6 @@ export async function POST(request: NextRequest) {
             where: { email: { in: toDelete } },
           })
           if (deleted.count > 0) {
-            console.log(`[users/POST] Auto-deleted ${deleted.count} demo user(s) after owner creation`)
           }
         }
       } catch {
@@ -228,7 +227,7 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   try {
     const [currentUser, authErr] = await guardOwner(request)
-    if (authErr) return authErr
+    if (authErr || !currentUser) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
     if (!currentUser) {
       return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
     }
@@ -324,7 +323,7 @@ export async function PUT(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     const [currentUser, authErr] = await guardOwner(request)
-    if (authErr) return authErr
+    if (authErr || !currentUser) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
     if (!currentUser) {
       return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
     }

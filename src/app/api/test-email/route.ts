@@ -22,7 +22,7 @@ const testEmailSchema = z.object({
 export async function POST(request: NextRequest) {
   try {
     const [user, authErr] = await guardAdmin(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     // Rate-limit per admin to 5 test emails per hour — prevents
     // accidential Gmail quota exhaustion from a stuck retry loop.

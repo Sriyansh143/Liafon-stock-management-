@@ -10,6 +10,7 @@ import {
   ShoppingCart,
   PackageOpen,
   ShieldCheck,
+  Shield,
   RefreshCw,
   FileSpreadsheet,
   CheckCircle2,
@@ -31,6 +32,11 @@ import {
   AlertTriangle,
   Settings,
   Cloud,
+  Slack,
+  DatabaseZap,
+  Boxes,
+  Store,
+  UserCog,
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardAction } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -44,7 +50,8 @@ import { Progress } from '@/components/ui/progress'
 import { useAppStore } from '@/store/app-store'
 import { CustomizeTab } from '@/components/pages/customize-tab'
 import { ConnectionsTab } from '@/components/pages/connections-tab'
-import { TaxRatesSection, TwoFactorSection, WhatsAppSection } from '@/components/phase4/settings-sections'
+import { TaxRatesSection, TwoFactorSection, WhatsAppSection, DataManagementSection } from '@/components/phase4/settings-sections'
+import { BrandingSection } from '@/components/phase4/branding-section'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -735,12 +742,12 @@ export default function SettingsPage() {
       <Tabs defaultValue="account" className="w-full">
         <TabsList className="w-full sm:w-auto flex flex-wrap">
           <TabsTrigger value="account" className="gap-1.5">
-            <KeyRound className="w-4 h-4" />
+            <UserCog className="w-4 h-4" />
             <span className="hidden xs:inline">Account</span>
           </TabsTrigger>
           <TabsTrigger value="import" className="gap-1.5">
             <FileSpreadsheet className="w-4 h-4" />
-            <span className="hidden xs:inline">Import</span>
+            <span className="hidden xs:inline">Import / Export</span>
           </TabsTrigger>
           <TabsTrigger value="backup" className="gap-1.5">
             <Database className="w-4 h-4" />
@@ -759,12 +766,12 @@ export default function SettingsPage() {
             <span className="hidden xs:inline">Connections</span>
           </TabsTrigger>
           <TabsTrigger value="customize" className="gap-1.5">
-            <Settings className="w-4 h-4" />
-            <span className="hidden xs:inline">Customize</span>
+            <Slack className="w-4 h-4" />
+            <span className="hidden xs:inline">Permissions</span>
           </TabsTrigger>
           <TabsTrigger value="phase4" className="gap-1.5">
-            <Settings className="w-4 h-4" />
-            <span className="hidden xs:inline">Tax / 2FA / WhatsApp</span>
+            <Shield className="w-4 h-4" />
+            <span className="hidden xs:inline">Branding & Security</span>
           </TabsTrigger>
         </TabsList>
 
@@ -1544,12 +1551,13 @@ export default function SettingsPage() {
           </motion.div>
         </TabsContent>
 
-        {/* ── Tab: Phase 4 (tax rates, 2FA, WhatsApp) ─────── */}
         <TabsContent value="phase4">
           <motion.div {...fadeIn} className="space-y-4">
+            <BrandingSection />
             <TaxRatesSection />
             <TwoFactorSection user={currentUser as { twoFactorEnabled?: boolean } | null} />
             <WhatsAppSection />
+            <DataManagementSection />
           </motion.div>
         </TabsContent>
       </Tabs>

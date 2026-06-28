@@ -7,7 +7,7 @@ const ALLOWED_DAYS = [7, 14, 30, 60, 90, 180, 365]
 export async function GET(request: NextRequest) {
   try {
     const [user, authErr] = await guardManager(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const searchParams = request.nextUrl.searchParams
     const type = searchParams.get('type') || 'daily'
@@ -25,13 +25,13 @@ export async function GET(request: NextRequest) {
         db.sale.groupBy({
           by: ['date'],
           _sum: { totalPrice: true, quantity: true },
-          where: { date: { gte: startDate } },
+          where: { ownerId: user?.ownerId || "", date: { gte: startDate } },
           orderBy: { date: 'asc' },
         }),
         db.purchase.groupBy({
           by: ['date'],
           _sum: { totalCost: true, quantity: true },
-          where: { date: { gte: startDate } },
+          where: { ownerId: user?.ownerId || "", date: { gte: startDate } },
           orderBy: { date: 'asc' },
         }),
       ])
@@ -86,12 +86,12 @@ export async function GET(request: NextRequest) {
           by: ['category'],
           _count: true,
           _sum: { currentStock: true, costPrice: true, sellingPrice: true },
-          where: { isActive: true },
+          where: { ownerId: user?.ownerId || "", isActive: true },
         }),
         db.sale.groupBy({
           by: ['partId'],
           _sum: { totalPrice: true, quantity: true },
-          where: { date: { gte: startDate } },
+          where: { ownerId: user?.ownerId || "", date: { gte: startDate } },
         }),
       ])
 
@@ -122,7 +122,7 @@ export async function GET(request: NextRequest) {
       // — but Prisma's groupBy can't multiply two columns. We compute it
       // correctly here by fetching parts with both fields.
       const partsForValuation = await db.sparePart.findMany({
-        where: { isActive: true },
+        where: { ownerId: user?.ownerId || "", isActive: true },
         select: { category: true, costPrice: true, sellingPrice: true, currentStock: true },
       })
       const valuationByCat = new Map<
@@ -180,7 +180,7 @@ export async function GET(request: NextRequest) {
       const salesByPart = await db.sale.groupBy({
         by: ['partId'],
         _sum: { totalPrice: true, quantity: true },
-        where: { date: { gte: startDate } },
+        where: { ownerId: user?.ownerId || "", date: { gte: startDate } },
         orderBy: { _sum: { totalPrice: 'desc' } },
       })
 
@@ -234,7 +234,7 @@ export async function GET(request: NextRequest) {
     if (type === 'lowstock') {
       // Bonus report type: low-stock items with supplier info
       const parts = await db.sparePart.findMany({
-        where: { isActive: true },
+        where: { ownerId: user?.ownerId || "", isActive: true },
         select: {
           id: true,
           partNumber: true,

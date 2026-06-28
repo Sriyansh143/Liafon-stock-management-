@@ -14,7 +14,7 @@ const WAME_MAX_ENCODED_LEN = 1500
 export async function POST(request: NextRequest) {
   try {
     const [user, authErr] = await guardAuth(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     // Rate-limit per user: 30 messages per 5 minutes. Prevents abuse
     // (e.g. spam-blasting customers) without hampering normal use.

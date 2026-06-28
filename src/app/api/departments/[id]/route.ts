@@ -9,11 +9,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const [_user, authErr] = await guardManager(request)
-    if (authErr) return authErr
+    const [user, authErr] = await guardManager(request)
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const { id } = await params
-    const dept = await db.department.findUnique({ where: { id } })
+    const dept = await db.department.findFirst({ where: { id, ownerId: user.ownerId } })
     if (!dept) return apiNotFound('Department not found')
     return NextResponse.json(dept)
   } catch (error) {
@@ -28,7 +28,7 @@ export async function PUT(
 ) {
   try {
     const [user, authErr] = await guardManager(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const { id } = await params
     const body = await request.json().catch(() => null)
@@ -39,7 +39,7 @@ export async function PUT(
       return NextResponse.json({ error: result.error }, { status: 400 })
     }
 
-    const existing = await db.department.findUnique({ where: { id } })
+    const existing = await db.department.findFirst({ where: { id, ownerId: user.ownerId } })
     if (!existing) return apiNotFound('Department not found')
 
     const updateData: Record<string, unknown> = {}
@@ -84,10 +84,10 @@ export async function DELETE(
 ) {
   try {
     const [user, authErr] = await guardManager(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const { id } = await params
-    const existing = await db.department.findUnique({ where: { id } })
+    const existing = await db.department.findFirst({ where: { id, ownerId: user.ownerId } })
     if (!existing) return apiNotFound('Department not found')
 
     await db.department.update({

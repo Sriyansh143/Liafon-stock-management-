@@ -27,7 +27,7 @@ import type { Prisma } from '@prisma/client'
 export async function GET(request: NextRequest) {
   try {
     const [user, authErr] = await guardAuth(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const searchParams = request.nextUrl.searchParams
     const preset = searchParams.get('preset') || 'current'
@@ -95,7 +95,7 @@ export async function GET(request: NextRequest) {
 
     // Fetch all active parts with their current stock
     const parts = await db.sparePart.findMany({
-      where: { isActive: true },
+      where: { ownerId: user?.ownerId || "", isActive: true },
       select: {
         id: true,
         partNumber: true,

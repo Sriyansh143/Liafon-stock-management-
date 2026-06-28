@@ -6,7 +6,7 @@ import type { Prisma } from '@prisma/client'
 export async function GET(request: NextRequest) {
   try {
     const [user, authErr] = await guardOwner(request)
-    if (authErr) return authErr
+    if (authErr || !user) return authErr ?? NextResponse.json({ error: "Auth required" }, { status: 401 })
 
     const searchParams = request.nextUrl.searchParams
     const page = Math.max(1, parseInt(searchParams.get('page') || '1') || 1)
@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get('startDate')
     const endDate = searchParams.get('endDate')
 
-    const where: Prisma.ActivityLogWhereInput = {}
+    const where: Prisma.ActivityLogWhereInput = { ownerId: user.ownerId }
     if (action) where.action = action
     if (entityType) where.entityType = entityType
     if (userId) where.userId = userId
